@@ -82,17 +82,33 @@
           <code>openrouter.ai/keys</code>.
         </p>
 
-        <label class="field-label" for="model-select">Model (image-capable, loaded live)</label>
+        <label class="field-label" for="model-select">Model A (image-capable, loaded live)</label>
         <div class="model-row">
           <select id="model-select" class="text-input"></select>
           <button id="model-reload" class="ghost-btn" type="button" title="Reload model list">
             ↻
           </button>
         </div>
+
+        <label class="field-label" for="model-b-select">Model B (alternates each pass)</label>
+        <select id="model-b-select" class="text-input"></select>
+
         <p id="model-status" class="muted small"></p>
+
+        <label class="field-label" for="passes-input">Refinement passes (1–100)</label>
+        <input
+          id="passes-input"
+          type="number"
+          min="1"
+          max="100"
+          class="text-input"
+          value="100"
+        />
         <p class="muted small">
-          This list comes straight from OpenRouter and only shows models that
-          currently accept images. Free ones are marked <strong>— free</strong>.
+          The bot re-examines the photo this many times, alternating between
+          Model A and Model B, refining toward a more specific location. It stops
+          early once the guess stops moving. Free models are rate-limited, so a
+          high count can be slow or hit limits — it keeps the best result so far.
         </p>
 
         <div class="modal-actions">

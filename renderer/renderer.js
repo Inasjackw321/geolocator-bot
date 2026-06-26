@@ -22,6 +22,8 @@ const settingsSave = document.getElementById('settings-save');
 const settingsCancel = document.getElementById('settings-cancel');
 const modelReload = document.getElementById('model-reload');
 const modelStatus = document.getElementById('model-status');
+const modelBSelect = document.getElementById('model-b-select');
+const passesInput = document.getElementById('passes-input');
 
 const mapWrap = document.getElementById('map-wrap');
 const mapLabel = document.getElementById('map-label');
@@ -141,31 +143,53 @@ async function openSettings() {
   apiKeyInput.placeholder = s.hasApiKey
     ? '•••••••• saved — leave blank to keep it'
     : 'sk-or-v1-...';
+  passesInput.value = s.passes || 100;
   settingsModal.classList.remove('hidden');
   apiKeyInput.focus();
-  loadModels(); // populate the dropdown with currently image-capable models
+  loadModels(); // populate the dropdowns with currently image-capable models
 }
 
 // Pull the live list of image-capable models from OpenRouter and fill the
 // dropdown. Keeps the user's saved model selected even if it isn't in the list.
+function fillSelect(select, models, selectedId) {
+  select.innerHTML = '';
+  let list = models;
+  if (selectedId && !list.some((m) => m.id === selectedId)) {
+    list = [{ id: selectedId, name: `${selectedId} (saved)`, free: false }, ...list];
+  }
+  for (const m of list) {
+    const opt = document.createElement('option');
+    opt.value = m.id;
+    opt.textContent = m.free ? `${m.name} — free` : m.name;
+    select.appendChild(opt);
+  }
+  select.value =
+    selectedId && list.some((m) => m.id === selectedId) ? selectedId : list[0].id;
+}
+
 async function loadModels() {
   modelReload.disabled = true;
   modelStatus.style.color = '';
   modelStatus.textContent = 'Loading image-capable models from OpenRouter…';
   modelSelect.innerHTML = '';
+  modelBSelect.innerHTML = '';
 
   const [res, settings] = await Promise.all([
     window.api.listModels(),
     window.api.getSettings(),
   ]);
   modelReload.disabled = false;
-  const saved = settings.model;
 
   if (!res.ok || !res.models || res.models.length === 0) {
-    const opt = document.createElement('option');
-    opt.value = saved || '';
-    opt.textContent = saved ? `${saved} (list unavailable)` : 'No models loaded';
-    modelSelect.appendChild(opt);
+    for (const [sel, val] of [
+      [modelSelect, settings.model],
+      [modelBSelect, settings.modelB],
+    ]) {
+      const opt = document.createElement('option');
+      opt.value = val || '';
+      opt.textContent = val ? `${val} (list unavailable)` : 'No models loaded';
+      sel.appendChild(opt);
+    }
     modelStatus.style.color = 'var(--warn)';
     modelStatus.textContent = res.ok
       ? 'No image-capable models were returned. Check your connection and retry (↻).'
@@ -173,22 +197,12 @@ async function loadModels() {
     return;
   }
 
-  let models = res.models;
-  if (saved && !models.some((m) => m.id === saved)) {
-    models = [{ id: saved, name: `${saved} (saved)`, free: false }, ...models];
-  }
+  fillSelect(modelSelect, res.models, settings.model);
+  fillSelect(modelBSelect, res.models, settings.modelB);
 
-  for (const m of models) {
-    const opt = document.createElement('option');
-    opt.value = m.id;
-    opt.textContent = m.free ? `${m.name} — free` : m.name;
-    modelSelect.appendChild(opt);
-  }
-  modelSelect.value = saved && models.some((m) => m.id === saved) ? saved : models[0].id;
-
-  const freeCount = models.filter((m) => m.free).length;
+  const freeCount = res.models.filter((m) => m.free).length;
   modelStatus.style.color = '';
-  modelStatus.textContent = `${models.length} image-capable models · ${freeCount} free`;
+  modelStatus.textContent = `${res.models.length} image-capable models · ${freeCount} free`;
 }
 
 modelReload.addEventListener('click', loadModels);
@@ -207,6 +221,8 @@ settingsSave.addEventListener('click', async () => {
   await window.api.saveSettings({
     apiKey: apiKeyInput.value, // blank is ignored by main; keeps existing key
     model: modelSelect.value,
+    modelB: modelBSelect.value,
+    passes: parseInt(passesInput.value, 10),
   });
   closeSettings();
   await refreshSettingsBadge();
@@ -332,7 +348,7 @@ async function runAnalysis() {
   busy = true;
   updateButtons();
   leftStatus.style.color = '';
-  leftStatus.textContent = 'Asking the model to read the clues…';
+  leftStatus.textContent = 'Starting refinement…';
 
   resultEmpty.classList.add('hidden');
   usageEl.classList.add('hidden');
@@ -341,11 +357,41 @@ async function runAnalysis() {
   resultEl.classList.add('cursor');
   resultEl.innerHTML = '';
 
+  // `raw` accumulates the CURRENT pass; each new pass resets it after we
+  // fold the finished pass into the map and keep its text as the displayed answer.
   let raw = '';
-  const unsubscribe = window.api.onDelta((delta) => {
+
+  // When a pass finishes (a new one starts, or analysis ends), use its text to
+  // refine the map and remember the latest best guess.
+  function foldPass(text) {
+    if (!text) return;
+    const coords = parseCoords(text);
+    if (coords) showLocation(coords.lat, coords.lng, bestGuessLine(text));
+  }
+
+  const offDelta = window.api.onDelta((delta) => {
     raw += delta;
     resultEl.innerHTML = renderMarkdown(stripGeoLine(raw));
     resultEl.scrollTop = resultEl.scrollHeight;
+  });
+
+  const offPass = window.api.onPass((info) => {
+    if (info.retry) {
+      leftStatus.style.color = 'var(--warn)';
+      leftStatus.textContent = `Pass ${info.pass}/${info.total}: rate-limited, retry ${info.retry}…`;
+      return;
+    }
+    // A new pass is beginning — fold the just-finished pass into the map.
+    foldPass(raw);
+    raw = '';
+    resultEl.innerHTML = '';
+    leftStatus.style.color = '';
+    leftStatus.textContent = `Refining — pass ${info.pass}/${info.total} via ${shortModelName(info.model)}…`;
+  });
+
+  const offNote = window.api.onNote((text) => {
+    leftStatus.style.color = '';
+    leftStatus.textContent = text;
   });
 
   const res = await window.api.analyze({
@@ -354,7 +400,9 @@ async function runAnalysis() {
     note: note.value,
   });
 
-  unsubscribe();
+  offDelta();
+  offPass();
+  offNote();
   resultEl.classList.remove('cursor');
   busy = false;
   updateButtons();
@@ -369,19 +417,21 @@ async function runAnalysis() {
     return;
   }
 
+  // Final pass: render and map it.
   resultEl.innerHTML = renderMarkdown(stripGeoLine(raw));
-  leftStatus.textContent = 'Done.';
-
   const coords = parseCoords(raw);
+  const passLabel = res.passesDone ? ` after ${res.passesDone} pass${res.passesDone === 1 ? '' : 'es'}` : '';
   if (coords) {
     showLocation(coords.lat, coords.lng, bestGuessLine(raw));
+    leftStatus.style.color = '';
+    leftStatus.textContent = `Done${passLabel}.`;
   } else {
     hideMap();
-    leftStatus.textContent = 'Done — no mappable coordinates were returned.';
+    leftStatus.textContent = `Done${passLabel} — no mappable coordinates were returned.`;
   }
 
   if (res.usage) {
-    usageEl.textContent = `${res.model} · ${res.usage.input_tokens} in / ${res.usage.output_tokens} out tokens`;
+    usageEl.textContent = `${res.model} · last pass ${res.usage.input_tokens} in / ${res.usage.output_tokens} out tokens`;
     usageEl.classList.remove('hidden');
   }
 }

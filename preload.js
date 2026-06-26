@@ -17,6 +17,16 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('analyze:delta', handler);
     return () => ipcRenderer.removeListener('analyze:delta', handler);
   },
+  onPass: (cb) => {
+    const handler = (_evt, info) => cb(info);
+    ipcRenderer.on('analyze:pass', handler);
+    return () => ipcRenderer.removeListener('analyze:pass', handler);
+  },
+  onNote: (cb) => {
+    const handler = (_evt, text) => cb(text);
+    ipcRenderer.on('analyze:note', handler);
+    return () => ipcRenderer.removeListener('analyze:note', handler);
+  },
 
   openExternal: (url) => ipcRenderer.invoke('open:external', url),
 });

@@ -30,9 +30,14 @@ opens straight away. First launch, click **⚙ Settings**, paste your free
 ## Features
 
 - **Drag & drop, paste, or browse** for a photo (JPEG, PNG, WebP, GIF)
-- **Streamed analysis** — the model's reasoning appears live as it thinks
-- **Result map** — drops a pin at the model's estimated coordinates (interactive
-  OpenStreetMap, plus a one-click "Open in Google Maps" link)
+- **Multi-pass refinement** — re-examines the photo up to **100 times**,
+  alternating between **two** models, each pass critiquing the last and pushing
+  for a *more specific* location. Stops early once the guess stops moving.
+- **Streamed analysis** — the model's reasoning appears live as it thinks, with a
+  "pass X/Y" progress indicator
+- **Result map** — drops a pin at the model's estimated coordinates and refines it
+  live each pass (interactive OpenStreetMap, plus a one-click "Open in Google
+  Maps" link)
 - Structured output: best guess, confidence, estimated coordinates, the clues used,
   alternative possibilities, and what would narrow it down
 - Optional free-text context/question to steer the analysis
@@ -100,6 +105,14 @@ renderer (UI)  ──IPC──▶  main process  ──HTTPS──▶  OpenRoute
 - The model is asked to end its answer with a `GEO: <lat>, <lng>` line; the app
   parses that and drops a pin on a bundled **Leaflet + OpenStreetMap** map. Your
   key is saved once in `settings.json` and reused on every launch.
+- **Refinement loop:** pick **Model A** and **Model B** in Settings plus a number
+  of passes (1–100, default 100). Pass 1 produces an initial analysis; each later
+  pass shows the previous answer to the *other* model and asks it to verify,
+  correct, and localize more precisely. The loop stops early when the coordinates
+  settle (within ~5 km for 3 passes in a row), and on rate limits it backs off and
+  keeps the best result so far. **Note:** free models are rate-limited, so a high
+  pass count can be slow or hit daily caps — lower it if you just want a quick
+  answer.
 
 ## Packaging a standalone app (optional)
 

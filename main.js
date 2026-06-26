@@ -37,6 +37,16 @@ function writeSettings(next) {
 // in Settings (openrouter.ai/models, filter Free + Image input).
 const DEFAULT_MODEL = 'google/gemini-2.0-flash-exp:free';
 
+// How many refinement passes to run by default, and the hard ceiling.
+const DEFAULT_PASSES = 100;
+const MAX_PASSES = 100;
+
+function clampInt(v, lo, hi, fallback) {
+  const n = parseInt(v, 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(hi, Math.max(lo, n));
+}
+
 const MEDIA_TYPES = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
@@ -63,7 +73,7 @@ Be explicit about your reasoning and your uncertainty. Do not pretend to be more
 Respond in Markdown using exactly this structure:
 
 ## Best guess
-A one-line answer: most likely country, region, and (if supportable) city or specific area.
+The MOST SPECIFIC location the evidence honestly supports. Always give the country and region; push further to city, then neighbourhood/district, then a specific street, road, or landmark whenever the clues justify it. Be as precise as the evidence allows — but never invent specificity you can't defend.
 
 ## Confidence
 One of: Very low / Low / Medium / High / Very high — followed by a brief reason.
@@ -122,20 +132,24 @@ app.on('window-all-closed', () => {
 // ---------------------------------------------------------------------------
 // IPC: settings
 // ---------------------------------------------------------------------------
-ipcMain.handle('settings:get', () => {
-  const s = readSettings();
+function settingsView(s) {
   return {
     hasApiKey: Boolean(s.apiKey),
     model: s.model || DEFAULT_MODEL,
+    modelB: s.modelB || s.model || DEFAULT_MODEL,
+    passes: clampInt(s.passes, 1, MAX_PASSES, DEFAULT_PASSES),
   };
-});
+}
 
-ipcMain.handle('settings:save', (_evt, { apiKey, model }) => {
+ipcMain.handle('settings:get', () => settingsView(readSettings()));
+
+ipcMain.handle('settings:save', (_evt, { apiKey, model, modelB, passes }) => {
   const next = {};
   if (typeof apiKey === 'string' && apiKey.trim()) next.apiKey = apiKey.trim();
   if (typeof model === 'string' && model.trim()) next.model = model.trim();
-  const saved = writeSettings(next);
-  return { hasApiKey: Boolean(saved.apiKey), model: saved.model || DEFAULT_MODEL };
+  if (typeof modelB === 'string' && modelB.trim()) next.modelB = modelB.trim();
+  if (passes !== undefined) next.passes = clampInt(passes, 1, MAX_PASSES, DEFAULT_PASSES);
+  return settingsView(writeSettings(next));
 });
 
 // ---------------------------------------------------------------------------
@@ -232,64 +246,181 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     };
   }
 
-  const model = settings.model || DEFAULT_MODEL;
+  const modelA = settings.model || DEFAULT_MODEL;
+  const modelB = settings.modelB || modelA;
+  const models = modelB && modelB !== modelA ? [modelA, modelB] : [modelA];
+  const passes = clampInt(settings.passes, 1, MAX_PASSES, DEFAULT_PASSES);
   const sender = evt.sender;
   const dataUrl = `data:${mediaType};base64,${data}`;
-
-  const userText =
-    note && note.trim()
-      ? `Analyze this photo and determine where it was taken.\n\nAdditional context from me: ${note.trim()}`
-      : 'Analyze this photo and determine where it was taken.';
-
-  const body = {
-    model,
-    stream: true,
-    max_tokens: 4096,
-    stream_options: { include_usage: true },
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: userText },
-          { type: 'image_url', image_url: { url: dataUrl } },
-        ],
-      },
-    ],
+  const send = (channel, msg) => {
+    if (!sender.isDestroyed()) sender.send(channel, msg);
   };
 
+  const baseTask =
+    note && note.trim()
+      ? `Determine where this photo was taken, as specifically as the evidence allows.\n\nAdditional context from me: ${note.trim()}`
+      : 'Determine where this photo was taken, as specifically as the evidence allows.';
+
+  let best = ''; // most refined analysis so far
+  let prevGeo = null; // last parsed coordinates
+  let stable = 0; // consecutive passes with ~unchanged coordinates
+  let passesDone = 0;
+  let lastUsage = null;
+
   try {
-    const resp = await fetch(OPENROUTER_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        // Optional OpenRouter attribution headers.
-        'HTTP-Referer': 'https://github.com/Inasjackw321/geolocator-bot',
-        'X-Title': 'Geolocator Bot',
-      },
-      body: JSON.stringify(body),
-    });
+    for (let i = 0; i < passes; i++) {
+      const model = models[i % models.length];
+      const messages = i === 0
+        ? initialMessages(dataUrl, baseTask)
+        : refineMessages(dataUrl, baseTask, best, i + 1);
 
-    if (!resp.ok || !resp.body) {
-      return { ok: false, error: await describeHttpError(resp) };
+      send('analyze:pass', { pass: i + 1, total: passes, model });
+
+      // One pass, with retry on rate-limit / transient server errors.
+      let result = null;
+      for (let attempt = 0; attempt <= 3; attempt++) {
+        result = await callModel({ apiKey, model, messages, onDelta: (d) => send('analyze:delta', d) });
+        if (result.ok) break;
+        const transient = result.status === 429 || (result.status >= 500 && result.status < 600);
+        if (transient && attempt < 3) {
+          send('analyze:pass', { pass: i + 1, total: passes, model, retry: attempt + 1 });
+          await sleep(1500 * (attempt + 1));
+          continue;
+        }
+        break;
+      }
+
+      if (!result.ok) {
+        // If we already have at least one good pass, stop gracefully and keep it.
+        if (passesDone > 0) {
+          send('analyze:note', `Stopped early at pass ${i + 1}: ${result.error}`);
+          break;
+        }
+        return { ok: false, error: result.error };
+      }
+
+      passesDone = i + 1;
+      best = result.text;
+      lastUsage = result.usage || lastUsage;
+
+      // Convergence check: if coordinates barely move for a few passes, stop.
+      const geo = parseGeo(result.text);
+      if (geo) {
+        if (prevGeo && haversineKm(geo, prevGeo) < 5) stable += 1;
+        else stable = 0;
+        prevGeo = geo;
+        if (stable >= 3 && i >= 2) {
+          send('analyze:note', `Converged after ${i + 1} passes.`);
+          break;
+        }
+      }
     }
-
-    const usage = await pumpStream(resp.body, (delta) => {
-      if (!sender.isDestroyed()) sender.send('analyze:delta', delta);
-    });
 
     return {
       ok: true,
-      model,
-      usage: usage
-        ? { input_tokens: usage.prompt_tokens, output_tokens: usage.completion_tokens }
+      model: models.join(' + '),
+      passesDone,
+      usage: lastUsage
+        ? { input_tokens: lastUsage.prompt_tokens, output_tokens: lastUsage.completion_tokens }
         : null,
     };
   } catch (err) {
+    if (passesDone > 0) {
+      send('analyze:note', `Stopped: ${err.message || err}`);
+      return { ok: true, model: models.join(' + '), passesDone, usage: null };
+    }
     return { ok: false, error: err.message || String(err) };
   }
 });
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function initialMessages(dataUrl, baseTask) {
+  return [
+    { role: 'system', content: SYSTEM_PROMPT },
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: baseTask },
+        { type: 'image_url', image_url: { url: dataUrl } },
+      ],
+    },
+  ];
+}
+
+function refineMessages(dataUrl, baseTask, previous, passNumber) {
+  const instruction =
+    `${baseTask}\n\n` +
+    `This is refinement pass ${passNumber}. Below is the latest assessment of THIS SAME photo (possibly from a different analyst). ` +
+    `Re-examine the image yourself from scratch. Verify each claim against what you can actually see, correct anything wrong or overstated, ` +
+    `and push to localize MORE precisely — narrow from country → region → city → district → street/landmark, but only as far as the evidence honestly supports. ` +
+    `If you cannot improve on it, keep it. Output the full structured report again with your improved answer, ending with the GEO line.\n\n` +
+    `--- Latest assessment ---\n${previous}`;
+  return [
+    { role: 'system', content: SYSTEM_PROMPT },
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: instruction },
+        { type: 'image_url', image_url: { url: dataUrl } },
+      ],
+    },
+  ];
+}
+
+// One streamed model call. Returns { ok, text, usage } or { ok:false, status, error }.
+async function callModel({ apiKey, model, messages, onDelta }) {
+  const body = {
+    model,
+    stream: true,
+    max_tokens: 2000,
+    stream_options: { include_usage: true },
+    messages,
+  };
+  const resp = await fetch(OPENROUTER_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': 'https://github.com/Inasjackw321/geolocator-bot',
+      'X-Title': 'Geolocator Bot',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok || !resp.body) {
+    return { ok: false, status: resp.status, error: await describeHttpError(resp) };
+  }
+  let text = '';
+  const usage = await pumpStream(resp.body, (d) => {
+    text += d;
+    if (onDelta) onDelta(d);
+  });
+  return { ok: true, text, usage };
+}
+
+// Parse the "GEO: lat, lng" line the model is asked to emit. Returns {lat,lng} or null.
+function parseGeo(text) {
+  const m = text.match(/^\s*GEO:\s*(-?\d{1,3}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*$/im);
+  if (!m) return null;
+  const lat = parseFloat(m[1]);
+  const lng = parseFloat(m[2]);
+  if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) return { lat, lng };
+  return null;
+}
+
+// Rough great-circle distance in km, for the convergence check.
+function haversineKm(a, b) {
+  const toRad = (d) => (d * Math.PI) / 180;
+  const R = 6371;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
+}
 
 // Parse an OpenAI-compatible SSE stream, forwarding text deltas. Returns the
 // final usage object if the provider included one.
