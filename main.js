@@ -138,6 +138,46 @@ ipcMain.handle('settings:save', (_evt, { apiKey, model }) => {
   return { hasApiKey: Boolean(saved.apiKey), model: saved.model || DEFAULT_MODEL };
 });
 
+// ---------------------------------------------------------------------------
+// IPC: live model discovery — ask OpenRouter which models currently accept
+// images, so the user never depends on a hardcoded ID that has rotated away.
+// ---------------------------------------------------------------------------
+function isImageCapable(m) {
+  const a = m.architecture || {};
+  if (Array.isArray(a.input_modalities) && a.input_modalities.includes('image')) return true;
+  if (typeof a.modality === 'string' && a.modality.includes('image')) return true;
+  return false;
+}
+
+function isFreeModel(m) {
+  const p = m.pricing || {};
+  return parseFloat(p.prompt || '0') === 0 && parseFloat(p.completion || '0') === 0;
+}
+
+ipcMain.handle('models:list', async () => {
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    const s = readSettings();
+    if (s.apiKey) {
+      const key = String(s.apiKey).trim();
+      if (!firstNonAsciiChar(key)) headers.Authorization = `Bearer ${key}`;
+    }
+    const resp = await fetch('https://openrouter.ai/api/v1/models', { headers });
+    if (!resp.ok) {
+      return { ok: false, error: `Could not load model list (HTTP ${resp.status}).` };
+    }
+    const json = await resp.json();
+    const models = (json.data || [])
+      .filter(isImageCapable)
+      .map((m) => ({ id: m.id, name: m.name || m.id, free: isFreeModel(m) }))
+      // free first, then alphabetical
+      .sort((a, b) => (a.free === b.free ? a.name.localeCompare(b.name) : a.free ? -1 : 1));
+    return { ok: true, models };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
 // Open a URL in the user's real browser (only http/https).
 ipcMain.handle('open:external', (_evt, url) => {
   if (typeof url === 'string' && /^https?:\/\//i.test(url)) {

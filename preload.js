@@ -7,6 +7,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('api', {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveSettings: (values) => ipcRenderer.invoke('settings:save', values),
+  listModels: () => ipcRenderer.invoke('models:list'),
 
   pickImage: () => ipcRenderer.invoke('image:pick'),
 

@@ -392,6 +392,23 @@ button:disabled {
   font-size: 17px;
 }
 
+.model-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.model-row select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+#model-reload {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  font-size: 15px;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;

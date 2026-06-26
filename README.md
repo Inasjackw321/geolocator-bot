@@ -59,13 +59,18 @@ and save. Then drop a photo in and click **Locate photo**.
 This app uses OpenRouter's OpenAI-compatible API, so any vision-capable model works.
 The Settings dropdown ships with these **free** options:
 
+**The Settings dropdown is populated live from OpenRouter** — it queries
+`openrouter.ai/api/v1/models` and shows only models that currently accept image
+input, so you never get stuck on a rotated/retired ID. Free ones are marked
+**— free**; hit **↻** to refresh the list.
+
 > ⚠️ The model **must support image input** — this app sends photos. Text-only
 > models (e.g. `openrouter/owl-alpha`) return *"No endpoints found that support
-> image input."*
-
-| Model | Notes |
-| --- | --- |
-| `google/gemini-2.0-flash-exp:free` | **Default.** Best free vision pick for geolocation — strong vision + broad world knowledge, fast. |
+> image input."* The live list filters those out for you.
+>
+> Tip: prefer one marked **— free**. If a particular free model still errors with
+> "no endpoints support image input," its free endpoint is temporarily text-only —
+> just pick a different image-capable one from the list.
 | `qwen/qwen-2.5-vl-72b-instruct:free` | Strong dedicated vision model. |
 | `meta-llama/llama-4-maverick:free` | Strong multimodal with good world knowledge. |
 | `mistralai/mistral-small-3.2-24b-instruct:free` | Lighter, still vision-capable. |

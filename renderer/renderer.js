@@ -20,6 +20,8 @@ const apiKeyInput = document.getElementById('api-key');
 const modelSelect = document.getElementById('model-select');
 const settingsSave = document.getElementById('settings-save');
 const settingsCancel = document.getElementById('settings-cancel');
+const modelReload = document.getElementById('model-reload');
+const modelStatus = document.getElementById('model-status');
 
 const mapWrap = document.getElementById('map-wrap');
 const mapLabel = document.getElementById('map-label');
@@ -141,7 +143,55 @@ async function openSettings() {
     : 'sk-or-v1-...';
   settingsModal.classList.remove('hidden');
   apiKeyInput.focus();
+  loadModels(); // populate the dropdown with currently image-capable models
 }
+
+// Pull the live list of image-capable models from OpenRouter and fill the
+// dropdown. Keeps the user's saved model selected even if it isn't in the list.
+async function loadModels() {
+  modelReload.disabled = true;
+  modelStatus.style.color = '';
+  modelStatus.textContent = 'Loading image-capable models from OpenRouter…';
+  modelSelect.innerHTML = '';
+
+  const [res, settings] = await Promise.all([
+    window.api.listModels(),
+    window.api.getSettings(),
+  ]);
+  modelReload.disabled = false;
+  const saved = settings.model;
+
+  if (!res.ok || !res.models || res.models.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = saved || '';
+    opt.textContent = saved ? `${saved} (list unavailable)` : 'No models loaded';
+    modelSelect.appendChild(opt);
+    modelStatus.style.color = 'var(--warn)';
+    modelStatus.textContent = res.ok
+      ? 'No image-capable models were returned. Check your connection and retry (↻).'
+      : `Could not load models: ${res.error}`;
+    return;
+  }
+
+  let models = res.models;
+  if (saved && !models.some((m) => m.id === saved)) {
+    models = [{ id: saved, name: `${saved} (saved)`, free: false }, ...models];
+  }
+
+  for (const m of models) {
+    const opt = document.createElement('option');
+    opt.value = m.id;
+    opt.textContent = m.free ? `${m.name} — free` : m.name;
+    modelSelect.appendChild(opt);
+  }
+  modelSelect.value = saved && models.some((m) => m.id === saved) ? saved : models[0].id;
+
+  const freeCount = models.filter((m) => m.free).length;
+  modelStatus.style.color = '';
+  modelStatus.textContent = `${models.length} image-capable models · ${freeCount} free`;
+}
+
+modelReload.addEventListener('click', loadModels);
 
 function closeSettings() {
   settingsModal.classList.add('hidden');
