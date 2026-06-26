@@ -4,16 +4,16 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
-// The SDK ships both CJS and ESM entry points. Normalize to the class
-// regardless of which interop shape `require` hands back.
-const sdk = require('@anthropic-ai/sdk');
-const Anthropic = sdk.default || sdk;
+// ---------------------------------------------------------------------------
+// This app talks to OpenRouter (https://openrouter.ai), which exposes an
+// OpenAI-compatible Chat Completions API. We call it with native fetch + SSE
+// streaming, so there is no SDK dependency.
+// ---------------------------------------------------------------------------
+const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
-// ---------------------------------------------------------------------------
-// Local settings (API key + model). Stored in the OS-standard userData dir.
-// This is a plaintext file readable by the local user — fine for a personal
-// desktop tool, but it is not a secret store. See README for details.
-// ---------------------------------------------------------------------------
+// Local settings (API key + model), stored in the OS-standard userData dir.
+// Plaintext file readable by the local user — fine for a personal desktop
+// tool, but not a secret store. See README.
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
 }
@@ -32,7 +32,10 @@ function writeSettings(next) {
   return merged;
 }
 
-const DEFAULT_MODEL = 'claude-opus-4-8';
+// Default model. `openrouter/owl-alpha` is an OpenRouter stealth/alpha model
+// (free while in preview). If it's retired or doesn't accept images, switch to a
+// free vision model in Settings — e.g. google/gemini-2.0-flash-exp:free.
+const DEFAULT_MODEL = 'openrouter/owl-alpha';
 
 const MEDIA_TYPES = {
   '.jpg': 'image/jpeg',
@@ -152,63 +155,138 @@ function loadImage(filePath) {
 }
 
 // ---------------------------------------------------------------------------
-// IPC: analyze — streams the model's response back to the renderer
+// IPC: analyze — streams the model's response back to the renderer via SSE
 // ---------------------------------------------------------------------------
 ipcMain.handle('analyze:start', async (evt, payload) => {
   const { mediaType, data, note } = payload || {};
   const settings = readSettings();
 
   if (!settings.apiKey) {
-    return { ok: false, error: 'No API key set. Open Settings and paste your Anthropic API key.' };
+    return { ok: false, error: 'No API key set. Open Settings and paste your OpenRouter API key.' };
   }
   if (!data || !mediaType) {
     return { ok: false, error: 'No image provided.' };
   }
 
-  const client = new Anthropic({ apiKey: settings.apiKey });
   const model = settings.model || DEFAULT_MODEL;
   const sender = evt.sender;
+  const dataUrl = `data:${mediaType};base64,${data}`;
 
-  const userContent = [
-    { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
-    {
-      type: 'text',
-      text: note && note.trim()
-        ? `Analyze this photo and determine where it was taken.\n\nAdditional context from me: ${note.trim()}`
-        : 'Analyze this photo and determine where it was taken.',
-    },
-  ];
+  const userText =
+    note && note.trim()
+      ? `Analyze this photo and determine where it was taken.\n\nAdditional context from me: ${note.trim()}`
+      : 'Analyze this photo and determine where it was taken.';
+
+  const body = {
+    model,
+    stream: true,
+    max_tokens: 4096,
+    stream_options: { include_usage: true },
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: userText },
+          { type: 'image_url', image_url: { url: dataUrl } },
+        ],
+      },
+    ],
+  };
 
   try {
-    const stream = client.messages.stream({
-      model,
-      max_tokens: 4096,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: userContent }],
+    const resp = await fetch(OPENROUTER_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${settings.apiKey}`,
+        'Content-Type': 'application/json',
+        // Optional OpenRouter attribution headers.
+        'HTTP-Referer': 'https://github.com/Inasjackw321/geolocator-bot',
+        'X-Title': 'Geolocator Bot',
+      },
+      body: JSON.stringify(body),
     });
 
-    stream.on('text', (delta) => {
+    if (!resp.ok || !resp.body) {
+      return { ok: false, error: await describeHttpError(resp) };
+    }
+
+    const usage = await pumpStream(resp.body, (delta) => {
       if (!sender.isDestroyed()) sender.send('analyze:delta', delta);
     });
 
-    const final = await stream.finalMessage();
     return {
       ok: true,
-      model: final.model,
-      usage: final.usage,
-      stopReason: final.stop_reason,
+      model,
+      usage: usage
+        ? { input_tokens: usage.prompt_tokens, output_tokens: usage.completion_tokens }
+        : null,
     };
   } catch (err) {
-    return { ok: false, error: describeError(err) };
+    return { ok: false, error: err.message || String(err) };
   }
 });
 
-function describeError(err) {
-  if (!err) return 'Unknown error.';
-  // Anthropic SDK errors expose status + message.
-  if (err.status === 401) return 'Authentication failed — check that your API key is correct.';
-  if (err.status === 403) return 'Permission denied — your key may not have access to this model.';
-  if (err.status === 429) return 'Rate limited — wait a moment and try again.';
-  if (err.status >= 500) return `Anthropic service error (${err.status}). Try again shortly.`;
-  return err.message || String(err);
+// Parse an OpenAI-compatible SSE stream, forwarding text deltas. Returns the
+// final usage object if the provider included one.
+async function pumpStream(stream, onDelta) {
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let usage = null;
+
+  for await (const chunk of stream) {
+    buffer += decoder.decode(chunk, { stream: true });
+
+    // SSE events are separated by blank lines; process complete lines only.
+    let nl;
+    while ((nl = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+
+      if (!line || line.startsWith(':')) continue; // keep-alive comment
+      if (!line.startsWith('data:')) continue;
+
+      const payload = line.slice(5).trim();
+      if (payload === '[DONE]') return usage;
+
+      let json;
+      try {
+        json = JSON.parse(payload);
+      } catch {
+        continue; // partial/non-JSON line, skip
+      }
+
+      const delta = json.choices && json.choices[0] && json.choices[0].delta;
+      if (delta && typeof delta.content === 'string' && delta.content) {
+        onDelta(delta.content);
+      }
+      if (json.usage) usage = json.usage;
+    }
+  }
+  return usage;
+}
+
+async function describeHttpError(resp) {
+  let detail = '';
+  try {
+    const j = await resp.json();
+    detail = (j && j.error && (j.error.message || j.error)) || '';
+  } catch {
+    /* non-JSON body */
+  }
+  switch (resp.status) {
+    case 401:
+      return 'Authentication failed — check that your OpenRouter API key is correct.';
+    case 402:
+      return 'Payment required — this model needs credits, or your free quota is exhausted.';
+    case 403:
+      return detail || 'Request blocked (403). The model may require privacy settings to be enabled in your OpenRouter account.';
+    case 404:
+      return `Model not found (404). The free model ID may have changed — pick another in Settings. ${detail}`.trim();
+    case 429:
+      return 'Rate limited — free models have tight limits. Wait a bit and try again, or pick another model.';
+    default:
+      if (resp.status >= 500) return `OpenRouter service error (${resp.status}). Try again shortly. ${detail}`.trim();
+      return detail || `Request failed (${resp.status}).`;
+  }
 }

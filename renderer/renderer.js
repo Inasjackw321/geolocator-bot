@@ -26,9 +26,15 @@ let currentImage = null; // { mediaType, data, name }
 let busy = false;
 
 // --- Settings ---------------------------------------------------------------
+function shortModelName(id) {
+  // "google/gemini-2.0-flash-exp:free" -> "gemini-2.0-flash-exp"
+  return String(id).split('/').pop().replace(/:free$/, '');
+}
+
 async function refreshSettingsBadge() {
   const s = await window.api.getSettings();
-  modelBadge.textContent = s.hasApiKey ? s.model : 'no API key';
+  modelBadge.textContent = s.hasApiKey ? shortModelName(s.model) : 'no API key';
+  modelBadge.title = s.model;
   modelBadge.style.color = s.hasApiKey ? '' : 'var(--warn)';
   modelSelect.value = s.model;
   return s;
@@ -178,7 +184,7 @@ async function runAnalysis() {
   busy = true;
   updateButtons();
   leftStatus.style.color = '';
-  leftStatus.textContent = 'Asking Claude to read the clues…';
+  leftStatus.textContent = 'Asking the model to read the clues…';
 
   resultEmpty.classList.add('hidden');
   usageEl.classList.add('hidden');
@@ -279,6 +285,6 @@ function renderMarkdown(md) {
   const s = await refreshSettingsBadge();
   if (!s.hasApiKey) {
     leftStatus.style.color = 'var(--warn)';
-    leftStatus.textContent = 'Add your Anthropic API key in Settings to begin.';
+    leftStatus.textContent = 'Add your OpenRouter API key in Settings to begin.';
   }
 })();
