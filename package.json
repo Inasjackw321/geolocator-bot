@@ -1,0 +1,27 @@
+{
+  "name": "geolocator-bot",
+  "version": "1.0.0",
+  "description": "AI desktop app that inspects photos and reasons about where they were taken",
+  "main": "main.js",
+  "author": "",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "build": {
+    "appId": "com.geolocator.bot",
+    "productName": "Geolocator Bot",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*"
+    ]
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.69.0"
+  },
+  "devDependencies": {
+    "electron": "^33.3.1"
+  }
+}

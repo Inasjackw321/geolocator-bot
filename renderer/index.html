@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline';"
+    />
+    <title>Geolocator Bot</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="globe">🌍</span>
+        <div>
+          <h1>Geolocator Bot</h1>
+          <p class="tagline">Drop in a photo — AI hunts for clues to where it was taken</p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <span id="model-badge" class="badge" title="Active model"></span>
+        <button id="settings-btn" class="ghost-btn">⚙ Settings</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel left">
+        <div id="dropzone" class="dropzone">
+          <img id="preview" class="preview hidden" alt="Selected photo" />
+          <div id="dropzone-empty" class="dropzone-empty">
+            <div class="dz-icon">🖼️</div>
+            <p><strong>Drop a photo here</strong></p>
+            <p class="muted">or click to choose · or paste from clipboard</p>
+          </div>
+        </div>
+
+        <label class="field-label" for="note">Optional context or question</label>
+        <textarea
+          id="note"
+          class="note"
+          rows="2"
+          placeholder="e.g. 'Taken on a road trip last summer' or 'Which city is this?'"
+        ></textarea>
+
+        <div class="actions">
+          <button id="analyze-btn" class="primary-btn" disabled>Locate photo</button>
+          <button id="clear-btn" class="ghost-btn" disabled>Clear</button>
+        </div>
+        <p id="left-status" class="left-status muted"></p>
+      </section>
+
+      <section class="panel right">
+        <div id="result-empty" class="result-empty">
+          <p class="muted">The location analysis will appear here.</p>
+        </div>
+        <article id="result" class="result hidden"></article>
+        <footer id="usage" class="usage muted hidden"></footer>
+      </section>
+    </main>
+
+    <!-- Settings modal -->
+    <div id="settings-modal" class="modal-backdrop hidden">
+      <div class="modal">
+        <h2>Settings</h2>
+        <label class="field-label" for="api-key">Anthropic API key</label>
+        <input id="api-key" type="password" class="text-input" placeholder="sk-ant-..." />
+        <p class="muted small">
+          Stored locally on this machine only. Get a key at
+          <code>console.anthropic.com</code>.
+        </p>
+
+        <label class="field-label" for="model-select">Model</label>
+        <select id="model-select" class="text-input">
+          <option value="claude-opus-4-8">Claude Opus 4.8 — most capable (recommended)</option>
+          <option value="claude-sonnet-4-6">Claude Sonnet 4.6 — faster &amp; cheaper</option>
+          <option value="claude-haiku-4-5">Claude Haiku 4.5 — fastest</option>
+        </select>
+
+        <div class="modal-actions">
+          <button id="settings-cancel" class="ghost-btn">Cancel</button>
+          <button id="settings-save" class="primary-btn">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>
