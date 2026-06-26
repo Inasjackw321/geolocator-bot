@@ -16,4 +16,6 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('analyze:delta', handler);
     return () => ipcRenderer.removeListener('analyze:delta', handler);
   },
+
+  openExternal: (url) => ipcRenderer.invoke('open:external', url),
 });

@@ -31,6 +31,8 @@ opens straight away. First launch, click **⚙ Settings**, paste your free
 
 - **Drag & drop, paste, or browse** for a photo (JPEG, PNG, WebP, GIF)
 - **Streamed analysis** — the model's reasoning appears live as it thinks
+- **Result map** — drops a pin at the model's estimated coordinates (interactive
+  OpenStreetMap, plus a one-click "Open in Google Maps" link)
 - Structured output: best guess, confidence, estimated coordinates, the clues used,
   alternative possibilities, and what would narrow it down
 - Optional free-text context/question to steer the analysis
@@ -57,10 +59,13 @@ and save. Then drop a photo in and click **Locate photo**.
 This app uses OpenRouter's OpenAI-compatible API, so any vision-capable model works.
 The Settings dropdown ships with these **free** options:
 
+> ⚠️ The model **must support image input** — this app sends photos. Text-only
+> models (e.g. `openrouter/owl-alpha`) return *"No endpoints found that support
+> image input."*
+
 | Model | Notes |
 | --- | --- |
-| `openrouter/owl-alpha` | **Default.** An OpenRouter stealth/alpha preview model (free while in preview). If it's retired or rejects images, switch to one of the free vision models below. |
-| `google/gemini-2.0-flash-exp:free` | Best free *vision* pick for geolocation — strong vision + broad world knowledge, fast. |
+| `google/gemini-2.0-flash-exp:free` | **Default.** Best free vision pick for geolocation — strong vision + broad world knowledge, fast. |
 | `qwen/qwen-2.5-vl-72b-instruct:free` | Strong dedicated vision model. |
 | `meta-llama/llama-4-maverick:free` | Strong multimodal with good world knowledge. |
 | `mistralai/mistral-small-3.2-24b-instruct:free` | Lighter, still vision-capable. |
@@ -85,7 +90,11 @@ renderer (UI)  ──IPC──▶  main process  ──HTTPS──▶  OpenRoute
   (`image_url` data URL) plus a geolocation system prompt, parsing the streamed SSE
   response and forwarding text deltas to the UI as they arrive. No SDK — just
   native `fetch`, so the app has **no runtime dependencies**.
-- The default model is `openrouter/owl-alpha`; change it anytime in Settings.
+- The default model is `google/gemini-2.0-flash-exp:free`; change it anytime in
+  Settings (must be a vision/image-capable model).
+- The model is asked to end its answer with a `GEO: <lat>, <lng>` line; the app
+  parses that and drops a pin on a bundled **Leaflet + OpenStreetMap** map. Your
+  key is saved once in `settings.json` and reused on every launch.
 
 ## Packaging a standalone app (optional)
 

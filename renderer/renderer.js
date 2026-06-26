@@ -21,9 +21,102 @@ const modelSelect = document.getElementById('model-select');
 const settingsSave = document.getElementById('settings-save');
 const settingsCancel = document.getElementById('settings-cancel');
 
+const mapWrap = document.getElementById('map-wrap');
+const mapLabel = document.getElementById('map-label');
+const mapLink = document.getElementById('map-link');
+
 // --- State ------------------------------------------------------------------
 let currentImage = null; // { mediaType, data, name }
 let busy = false;
+
+// --- Map (Leaflet, bundled locally) -----------------------------------------
+let map = null;
+let marker = null;
+
+// Tell Leaflet where its bundled marker images live.
+if (window.L) {
+  L.Icon.Default.imagePath = 'vendor/leaflet/images/';
+}
+
+function ensureMap() {
+  if (map) return map;
+  map = L.map('map', { zoomControl: true, attributionControl: true });
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '© OpenStreetMap contributors',
+  }).addTo(map);
+  return map;
+}
+
+function hideMap() {
+  mapWrap.classList.add('hidden');
+}
+
+function showLocation(lat, lng, labelText) {
+  mapWrap.classList.remove('hidden');
+  const m = ensureMap();
+  // The container was hidden when created, so Leaflet must recompute its size.
+  setTimeout(() => m.invalidateSize(), 0);
+
+  const zoom = 5;
+  m.setView([lat, lng], zoom);
+  if (marker) {
+    marker.setLatLng([lat, lng]);
+  } else {
+    marker = L.marker([lat, lng]).addTo(m);
+  }
+  marker.bindPopup(labelText || 'Best guess').openPopup();
+
+  mapLabel.textContent = `📍 ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+  const q = `${lat},${lng}`;
+  mapLink.dataset.url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
+}
+
+mapLink.addEventListener('click', (e) => {
+  e.preventDefault();
+  const url = mapLink.dataset.url;
+  if (url) window.api.openExternal(url);
+});
+
+// Parse the machine-readable "GEO: lat, lng" line the model is asked to emit,
+// with a light fallback to the first decimal lat/lng pair in the text.
+function parseCoords(text) {
+  const geo = text.match(/^\s*GEO:\s*(-?\d{1,3}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*$/im);
+  if (geo) {
+    return validatePair(parseFloat(geo[1]), parseFloat(geo[2]));
+  }
+  if (/^\s*GEO:\s*none\s*$/im.test(text)) return null;
+
+  // Fallback: a "lat, lng" decimal pair anywhere in the text.
+  const pair = text.match(/(-?\d{1,2}(?:\.\d+)?)\s*[,/]\s*(-?\d{1,3}(?:\.\d+)?)/);
+  if (pair) return validatePair(parseFloat(pair[1]), parseFloat(pair[2]));
+  return null;
+}
+
+function validatePair(lat, lng) {
+  if (
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    lat >= -90 &&
+    lat <= 90 &&
+    lng >= -180 &&
+    lng <= 180
+  ) {
+    return { lat, lng };
+  }
+  return null;
+}
+
+// Remove the GEO line so it isn't shown in the rendered analysis.
+function stripGeoLine(text) {
+  return text.replace(/^\s*GEO:.*$/gim, '').trimEnd();
+}
+
+// Pull the "Best guess" line for the map popup, if present.
+function bestGuessLine(text) {
+  const m = text.match(/##\s*Best guess\s*\n+([^\n]+)/i);
+  return m ? m[1].replace(/\*\*/g, '').trim() : '';
+}
 
 // --- Settings ---------------------------------------------------------------
 function shortModelName(id) {
@@ -40,8 +133,12 @@ async function refreshSettingsBadge() {
   return s;
 }
 
-function openSettings() {
+async function openSettings() {
+  const s = await window.api.getSettings();
   apiKeyInput.value = '';
+  apiKeyInput.placeholder = s.hasApiKey
+    ? '•••••••• saved — leave blank to keep it'
+    : 'sk-or-v1-...';
   settingsModal.classList.remove('hidden');
   apiKeyInput.focus();
 }
@@ -167,6 +264,7 @@ clearBtn.addEventListener('click', () => {
   resultEl.innerHTML = '';
   resultEmpty.classList.remove('hidden');
   usageEl.classList.add('hidden');
+  hideMap();
 });
 
 // --- Analyze ----------------------------------------------------------------
@@ -188,6 +286,7 @@ async function runAnalysis() {
 
   resultEmpty.classList.add('hidden');
   usageEl.classList.add('hidden');
+  hideMap();
   resultEl.classList.remove('hidden');
   resultEl.classList.add('cursor');
   resultEl.innerHTML = '';
@@ -195,7 +294,7 @@ async function runAnalysis() {
   let raw = '';
   const unsubscribe = window.api.onDelta((delta) => {
     raw += delta;
-    resultEl.innerHTML = renderMarkdown(raw);
+    resultEl.innerHTML = renderMarkdown(stripGeoLine(raw));
     resultEl.scrollTop = resultEl.scrollHeight;
   });
 
@@ -220,8 +319,17 @@ async function runAnalysis() {
     return;
   }
 
-  resultEl.innerHTML = renderMarkdown(raw);
+  resultEl.innerHTML = renderMarkdown(stripGeoLine(raw));
   leftStatus.textContent = 'Done.';
+
+  const coords = parseCoords(raw);
+  if (coords) {
+    showLocation(coords.lat, coords.lng, bestGuessLine(raw));
+  } else {
+    hideMap();
+    leftStatus.textContent = 'Done — no mappable coordinates were returned.';
+  }
+
   if (res.usage) {
     usageEl.textContent = `${res.model} · ${res.usage.input_tokens} in / ${res.usage.output_tokens} out tokens`;
     usageEl.classList.remove('hidden');

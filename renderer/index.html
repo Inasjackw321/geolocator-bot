@@ -4,9 +4,10 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline';"
+      content="default-src 'self'; img-src 'self' data: blob: https://*.tile.openstreetmap.org; style-src 'self' 'unsafe-inline'; script-src 'self';"
     />
     <title>Geolocator Bot</title>
+    <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -55,6 +56,17 @@
           <p class="muted">The location analysis will appear here.</p>
         </div>
         <article id="result" class="result hidden"></article>
+
+        <div id="map-wrap" class="map-wrap hidden">
+          <div class="map-head">
+            <span id="map-label" class="map-label"></span>
+            <a id="map-link" class="map-link" href="#" target="_blank" rel="noopener">
+              Open in Google Maps ↗
+            </a>
+          </div>
+          <div id="map"></div>
+        </div>
+
         <footer id="usage" class="usage muted hidden"></footer>
       </section>
     </main>
@@ -70,11 +82,8 @@
           <code>openrouter.ai/keys</code>.
         </p>
 
-        <label class="field-label" for="model-select">Model</label>
+        <label class="field-label" for="model-select">Model (must support image input)</label>
         <select id="model-select" class="text-input">
-          <option value="openrouter/owl-alpha">
-            OpenRouter Owl (alpha) — stealth preview model
-          </option>
           <option value="google/gemini-2.0-flash-exp:free">
             Gemini 2.0 Flash (free) — best free vision pick for geolocation
           </option>
@@ -101,6 +110,7 @@
       </div>
     </div>
 
+    <script src="vendor/leaflet/leaflet.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>

@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
@@ -32,10 +32,10 @@ function writeSettings(next) {
   return merged;
 }
 
-// Default model. `openrouter/owl-alpha` is an OpenRouter stealth/alpha model
-// (free while in preview). If it's retired or doesn't accept images, switch to a
-// free vision model in Settings — e.g. google/gemini-2.0-flash-exp:free.
-const DEFAULT_MODEL = 'openrouter/owl-alpha';
+// Default model. MUST be vision-capable, since this app sends photos. Free and
+// strong for geolocation. If it 404s (free IDs rotate), pick another vision model
+// in Settings (openrouter.ai/models, filter Free + Image input).
+const DEFAULT_MODEL = 'google/gemini-2.0-flash-exp:free';
 
 const MEDIA_TYPES = {
   '.jpg': 'image/jpeg',
@@ -80,7 +80,12 @@ A bulleted list. For each clue, name what you saw and what it implies.
 ## What would narrow it down
 Briefly, what additional detail or angle would most increase your certainty.
 
-If the user provides extra context or a specific question, take it into account.`;
+If the user provides extra context or a specific question, take it into account.
+
+Finally, after everything above, output one last line in EXACTLY this format so an app can place a pin on a map — decimal degrees, nothing else on the line:
+GEO: <latitude>, <longitude>
+If you genuinely cannot estimate coordinates, output:
+GEO: none`;
 
 let mainWindow = null;
 
@@ -131,6 +136,13 @@ ipcMain.handle('settings:save', (_evt, { apiKey, model }) => {
   if (typeof model === 'string' && model.trim()) next.model = model.trim();
   const saved = writeSettings(next);
   return { hasApiKey: Boolean(saved.apiKey), model: saved.model || DEFAULT_MODEL };
+});
+
+// Open a URL in the user's real browser (only http/https).
+ipcMain.handle('open:external', (_evt, url) => {
+  if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
+    shell.openExternal(url);
+  }
 });
 
 // ---------------------------------------------------------------------------

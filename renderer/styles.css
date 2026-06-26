@@ -242,6 +242,8 @@ button:disabled {
   padding-right: 6px;
   line-height: 1.55;
   font-size: 14px;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .result h2 {
@@ -290,6 +292,56 @@ button:disabled {
   50% {
     opacity: 0;
   }
+}
+
+/* Map */
+.map-wrap {
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+
+.map-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  font-size: 12px;
+}
+
+.map-label {
+  color: var(--text);
+}
+
+.map-link {
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.map-link:hover {
+  text-decoration: underline;
+}
+
+#map {
+  height: 260px;
+  width: 100%;
+  background: #0c0f1c;
+}
+
+/* Leaflet popups on the dark theme */
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.leaflet-container {
+  font: inherit;
 }
 
 .usage {
