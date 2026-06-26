@@ -22,8 +22,6 @@ const settingsSave = document.getElementById('settings-save');
 const settingsCancel = document.getElementById('settings-cancel');
 const modelReload = document.getElementById('model-reload');
 const modelStatus = document.getElementById('model-status');
-const modelBSelect = document.getElementById('model-b-select');
-const passesInput = document.getElementById('passes-input');
 
 const mapWrap = document.getElementById('map-wrap');
 const mapLabel = document.getElementById('map-label');
@@ -143,10 +141,9 @@ async function openSettings() {
   apiKeyInput.placeholder = s.hasApiKey
     ? '•••••••• saved — leave blank to keep it'
     : 'sk-or-v1-...';
-  passesInput.value = s.passes || 100;
   settingsModal.classList.remove('hidden');
   apiKeyInput.focus();
-  loadModels(); // populate the dropdowns with currently image-capable models
+  loadModels(); // populate the dropdown with the available Gemma vision models
 }
 
 // Pull the live list of image-capable models from OpenRouter and fill the
@@ -170,9 +167,8 @@ function fillSelect(select, models, selectedId) {
 async function loadModels() {
   modelReload.disabled = true;
   modelStatus.style.color = '';
-  modelStatus.textContent = 'Loading image-capable models from OpenRouter…';
+  modelStatus.textContent = 'Loading models from OpenRouter…';
   modelSelect.innerHTML = '';
-  modelBSelect.innerHTML = '';
 
   const [res, settings] = await Promise.all([
     window.api.listModels(),
@@ -181,28 +177,20 @@ async function loadModels() {
   modelReload.disabled = false;
 
   if (!res.ok || !res.models || res.models.length === 0) {
-    for (const [sel, val] of [
-      [modelSelect, settings.model],
-      [modelBSelect, settings.modelB],
-    ]) {
-      const opt = document.createElement('option');
-      opt.value = val || '';
-      opt.textContent = val ? `${val} (list unavailable)` : 'No models loaded';
-      sel.appendChild(opt);
-    }
+    const opt = document.createElement('option');
+    opt.value = settings.model || '';
+    opt.textContent = settings.model ? `${settings.model} (list unavailable)` : 'No models loaded';
+    modelSelect.appendChild(opt);
     modelStatus.style.color = 'var(--warn)';
     modelStatus.textContent = res.ok
-      ? 'No image-capable models were returned. Check your connection and retry (↻).'
+      ? 'Could not find the Gemma models right now. Check your connection and retry (↻).'
       : `Could not load models: ${res.error}`;
     return;
   }
 
   fillSelect(modelSelect, res.models, settings.model);
-  fillSelect(modelBSelect, res.models, settings.modelB);
-
-  const freeCount = res.models.filter((m) => m.free).length;
   modelStatus.style.color = '';
-  modelStatus.textContent = `${res.models.length} image-capable models · ${freeCount} free`;
+  modelStatus.textContent = `${res.models.length} model${res.models.length === 1 ? '' : 's'} available`;
 }
 
 modelReload.addEventListener('click', loadModels);
@@ -221,8 +209,6 @@ settingsSave.addEventListener('click', async () => {
   await window.api.saveSettings({
     apiKey: apiKeyInput.value, // blank is ignored by main; keeps existing key
     model: modelSelect.value,
-    modelB: modelBSelect.value,
-    passes: parseInt(passesInput.value, 10),
   });
   closeSettings();
   await refreshSettingsBadge();
@@ -348,7 +334,7 @@ async function runAnalysis() {
   busy = true;
   updateButtons();
   leftStatus.style.color = '';
-  leftStatus.textContent = 'Starting refinement…';
+  leftStatus.textContent = 'Starting…';
 
   resultEmpty.classList.add('hidden');
   usageEl.classList.add('hidden');
@@ -357,36 +343,37 @@ async function runAnalysis() {
   resultEl.classList.add('cursor');
   resultEl.innerHTML = '';
 
-  // `raw` accumulates the CURRENT pass; each new pass resets it after we
-  // fold the finished pass into the map and keep its text as the displayed answer.
+  // `raw` accumulates the CURRENT question's answer. Each new question resets it.
   let raw = '';
+  let curLabel = ''; // heading for the question being answered now
+  let curFinal = false; // is this the final synthesis step?
 
-  // When a pass finishes (a new one starts, or analysis ends), use its text to
-  // refine the map and remember the latest best guess.
-  function foldPass(text) {
-    if (!text) return;
-    const coords = parseCoords(text);
-    if (coords) showLocation(coords.lat, coords.lng, bestGuessLine(text));
+  function render() {
+    const heading = curLabel && !curFinal ? `## ${curLabel}\n\n` : '';
+    resultEl.innerHTML = renderMarkdown(heading + stripGeoLine(raw));
+    resultEl.scrollTop = resultEl.scrollHeight;
   }
 
   const offDelta = window.api.onDelta((delta) => {
     raw += delta;
-    resultEl.innerHTML = renderMarkdown(stripGeoLine(raw));
-    resultEl.scrollTop = resultEl.scrollHeight;
+    render();
   });
 
   const offPass = window.api.onPass((info) => {
     if (info.retry) {
       leftStatus.style.color = 'var(--warn)';
-      leftStatus.textContent = `Pass ${info.pass}/${info.total}: rate-limited, retry ${info.retry}…`;
+      leftStatus.textContent = `Question ${info.pass}/${info.total}: rate-limited, retry ${info.retry}…`;
       return;
     }
-    // A new pass is beginning — fold the just-finished pass into the map.
-    foldPass(raw);
+    // A new question is beginning — reset the answer area.
     raw = '';
+    curLabel = info.label || '';
+    curFinal = Boolean(info.final);
     resultEl.innerHTML = '';
     leftStatus.style.color = '';
-    leftStatus.textContent = `Refining — pass ${info.pass}/${info.total} via ${shortModelName(info.model)}…`;
+    leftStatus.textContent = info.final
+      ? `Synthesising final location (${info.pass}/${info.total})…`
+      : `Question ${info.pass}/${info.total}: ${info.label}…`;
   });
 
   const offNote = window.api.onNote((text) => {
@@ -417,21 +404,21 @@ async function runAnalysis() {
     return;
   }
 
-  // Final pass: render and map it.
+  // Final synthesis: render the structured answer and map it.
+  curFinal = true;
   resultEl.innerHTML = renderMarkdown(stripGeoLine(raw));
   const coords = parseCoords(raw);
-  const passLabel = res.passesDone ? ` after ${res.passesDone} pass${res.passesDone === 1 ? '' : 'es'}` : '';
   if (coords) {
     showLocation(coords.lat, coords.lng, bestGuessLine(raw));
     leftStatus.style.color = '';
-    leftStatus.textContent = `Done${passLabel}.`;
+    leftStatus.textContent = 'Done.';
   } else {
     hideMap();
-    leftStatus.textContent = `Done${passLabel} — no mappable coordinates were returned.`;
+    leftStatus.textContent = 'Done — no mappable coordinates were returned.';
   }
 
   if (res.usage) {
-    usageEl.textContent = `${res.model} · last pass ${res.usage.input_tokens} in / ${res.usage.output_tokens} out tokens`;
+    usageEl.textContent = `${shortModelName(res.model)} · final step ${res.usage.input_tokens} in / ${res.usage.output_tokens} out tokens`;
     usageEl.classList.remove('hidden');
   }
 }

@@ -30,11 +30,12 @@ opens straight away. First launch, click **⚙ Settings**, paste your free
 ## Features
 
 - **Drag & drop, paste, or browse** for a photo (JPEG, PNG, WebP, GIF)
-- **Multi-pass refinement** — re-examines the photo up to **100 times**,
-  alternating between **two** models, each pass critiquing the last and pushing
-  for a *more specific* location. Stops early once the guess stops moving.
-- **Streamed analysis** — the model's reasoning appears live as it thinks, with a
-  "pass X/Y" progress indicator
+- **Question-by-question interview** — instead of one big prompt, the app asks the
+  AI a sequence of focused questions (text/language, architecture, nature/climate,
+  roads, vehicles & brands, landmarks/sun), then a final synthesis question that
+  combines the answers into one *specific* location.
+- **Streamed analysis** — each question and its answer appear live, with a
+  "Question X/Y" progress indicator
 - **Result map** — drops a pin at the model's estimated coordinates and refines it
   live each pass (interactive OpenStreetMap, plus a one-click "Open in Google
   Maps" link)
@@ -64,18 +65,17 @@ and save. Then drop a photo in and click **Locate photo**.
 This app uses OpenRouter's OpenAI-compatible API, so any vision-capable model works.
 The Settings dropdown ships with these **free** options:
 
-**The Settings dropdown is populated live from OpenRouter** — it queries
-`openrouter.ai/api/v1/models` and shows only models that currently accept image
-input, so you never get stuck on a rotated/retired ID. Free ones are marked
-**— free**; hit **↻** to refresh the list.
+**The Settings dropdown offers only the two Gemma 4 vision models** — it queries
+`openrouter.ai/api/v1/models` live and matches them by name, so it always uses the
+correct current ID even if the slug rotates:
 
-> ⚠️ The model **must support image input** — this app sends photos. Text-only
-> models (e.g. `openrouter/owl-alpha`) return *"No endpoints found that support
-> image input."* The live list filters those out for you.
->
-> Tip: prefer one marked **— free**. If a particular free model still errors with
-> "no endpoints support image input," its free endpoint is temporarily text-only —
-> just pick a different image-capable one from the list.
+| Model | Notes |
+| --- | --- |
+| `Google: Gemma 4 26B A4B (free)` | Lighter, faster. |
+| `Google: Gemma 4 31B (free)` | Larger, a bit stronger. |
+
+Hit **↻** to refresh. Pick whichever you prefer — the whole interview runs on that
+one model.
 | `qwen/qwen-2.5-vl-72b-instruct:free` | Strong dedicated vision model. |
 | `meta-llama/llama-4-maverick:free` | Strong multimodal with good world knowledge. |
 | `mistralai/mistral-small-3.2-24b-instruct:free` | Lighter, still vision-capable. |
@@ -105,14 +105,12 @@ renderer (UI)  ──IPC──▶  main process  ──HTTPS──▶  OpenRoute
 - The model is asked to end its answer with a `GEO: <lat>, <lng>` line; the app
   parses that and drops a pin on a bundled **Leaflet + OpenStreetMap** map. Your
   key is saved once in `settings.json` and reused on every launch.
-- **Refinement loop:** pick **Model A** and **Model B** in Settings plus a number
-  of passes (1–100, default 100). Pass 1 produces an initial analysis; each later
-  pass shows the previous answer to the *other* model and asks it to verify,
-  correct, and localize more precisely. The loop stops early when the coordinates
-  settle (within ~5 km for 3 passes in a row), and on rate limits it backs off and
-  keeps the best result so far. **Note:** free models are rate-limited, so a high
-  pass count can be slow or hit daily caps — lower it if you just want a quick
-  answer.
+- **Interview flow:** one model is asked six focused observation questions
+  (text/language, architecture, nature/climate, roads, vehicles & brands,
+  landmarks/sun) in a single ongoing conversation, then a seventh **synthesis**
+  question that merges the answers into the final structured report + `GEO` line —
+  seven calls total. On a rate-limit it backs off and retries, keeping earlier
+  answers. The image is sent once (on the first question) and stays in context.
 
 ## Packaging a standalone app (optional)
 

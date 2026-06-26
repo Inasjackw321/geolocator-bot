@@ -37,16 +37,6 @@ function writeSettings(next) {
 // in Settings (openrouter.ai/models, filter Free + Image input).
 const DEFAULT_MODEL = 'google/gemini-2.0-flash-exp:free';
 
-// How many refinement passes to run by default, and the hard ceiling.
-const DEFAULT_PASSES = 100;
-const MAX_PASSES = 100;
-
-function clampInt(v, lo, hi, fallback) {
-  const n = parseInt(v, 10);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.min(hi, Math.max(lo, n));
-}
-
 const MEDIA_TYPES = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
@@ -55,24 +45,41 @@ const MEDIA_TYPES = {
   '.gif': 'image/gif',
 };
 
-const SYSTEM_PROMPT = `You are an expert geolocation analyst — think of a world-class GeoGuessr player combined with an OSINT investigator. You are given a single photograph and must reason carefully about where on Earth it was most likely taken.
+// The model is interviewed with a series of focused questions, then asked to
+// synthesise a final, specific location. One model, one ongoing conversation.
+const INTERVIEW_SYSTEM =
+  'You are an expert geolocation analyst — a world-class GeoGuessr player combined with an OSINT investigator — examining one photograph through a series of focused questions. ' +
+  'Answer each question concretely and specifically, based only on what is actually visible plus your world knowledge. ' +
+  'Be willing to name specific countries, regions, cities, and districts. Note your uncertainty, but do not refuse to commit. Keep each answer focused on the question asked.';
 
-Work through the visible evidence methodically. Consider, where applicable:
-- Language and script on any signs, shopfronts, posters, or graffiti
-- Architecture, building materials, roof styles, and urban vs. rural layout
-- Vegetation, tree species, crops, and overall climate/biome
-- Road infrastructure: which side of the road traffic drives on, road markings, signage shape/color, bollards, guardrails
-- Vehicles and license plate shapes/colors
-- Utility poles, wiring style, street furniture, fire hydrants, manhole covers
-- Terrain, geology, mountains, coastline, and the position/angle of the sun
-- People's clothing, and any cultural or commercial brand cues
-- Camera/photo characteristics (e.g. Google Street View artifacts) if present
+const INTERVIEW_QUESTIONS = [
+  {
+    label: 'Text & language',
+    text: 'Question 1: Read every piece of text visible in the image — signs, shopfronts, posters, billboards, license plates, graffiti. Transcribe whatever you can make out. Identify the language(s), script, and alphabet, and any spelling conventions. Which countries or regions do these point to?',
+  },
+  {
+    label: 'Architecture & built environment',
+    text: 'Question 2: Describe the buildings and built environment — architectural style, construction materials, roof shapes, window styles, balconies, fences, and whether it looks urban, suburban, or rural. Which part of the world do these most resemble?',
+  },
+  {
+    label: 'Nature & climate',
+    text: 'Question 3: Describe the natural environment — vegetation and any identifiable plant or tree species, crops, terrain, geology, soil colour, the sky, and the apparent climate or biome. What latitudes and regions are consistent with this?',
+  },
+  {
+    label: 'Roads & infrastructure',
+    text: 'Question 4: Describe the road and traffic infrastructure — which side of the road vehicles drive on, lane markings, the shape/colour/design of road signs, bollards, guardrails, traffic lights, kerbs, utility poles and overhead wiring. Which countries use these specific conventions?',
+  },
+  {
+    label: 'Vehicles, plates & brands',
+    text: 'Question 5: Describe any vehicles (make/model/style) and their license plates (shape, colour, format), plus any visible brand names, shop chains, or commercial signage. Which countries or markets do these indicate?',
+  },
+  {
+    label: 'Landmarks, sun & terrain',
+    text: 'Question 6: Note anything that helps pin the exact spot — recognisable landmarks, mountains, coastlines, rivers, the position of the sun and shadows (hemisphere/time of day), and any distinctive geographic features.',
+  },
+];
 
-Be explicit about your reasoning and your uncertainty. Do not pretend to be more certain than the evidence allows. If the image lacks strong clues, say so.
-
-Respond in Markdown using exactly this structure:
-
-## Best guess
+const REPORT_FORMAT = `## Best guess
 The MOST SPECIFIC location the evidence honestly supports. Always give the country and region; push further to city, then neighbourhood/district, then a specific street, road, or landmark whenever the clues justify it. Be as precise as the evidence allows — but never invent specificity you can't defend.
 
 ## Confidence
@@ -90,12 +97,15 @@ A bulleted list. For each clue, name what you saw and what it implies.
 ## What would narrow it down
 Briefly, what additional detail or angle would most increase your certainty.
 
-If the user provides extra context or a specific question, take it into account.
-
 Finally, after everything above, output one last line in EXACTLY this format so an app can place a pin on a map — decimal degrees, nothing else on the line:
 GEO: <latitude>, <longitude>
 If you genuinely cannot estimate coordinates, output:
 GEO: none`;
+
+const SYNTHESIS_PROMPT =
+  'Final question: Combine ALL of your answers above into a single conclusion. Determine the most specific location this photo was taken, weighing the strongest clues most heavily and discarding weak guesses. ' +
+  'Respond in Markdown using EXACTLY this structure:\n\n' +
+  REPORT_FORMAT;
 
 let mainWindow = null;
 
@@ -136,19 +146,15 @@ function settingsView(s) {
   return {
     hasApiKey: Boolean(s.apiKey),
     model: s.model || DEFAULT_MODEL,
-    modelB: s.modelB || s.model || DEFAULT_MODEL,
-    passes: clampInt(s.passes, 1, MAX_PASSES, DEFAULT_PASSES),
   };
 }
 
 ipcMain.handle('settings:get', () => settingsView(readSettings()));
 
-ipcMain.handle('settings:save', (_evt, { apiKey, model, modelB, passes }) => {
+ipcMain.handle('settings:save', (_evt, { apiKey, model }) => {
   const next = {};
   if (typeof apiKey === 'string' && apiKey.trim()) next.apiKey = apiKey.trim();
   if (typeof model === 'string' && model.trim()) next.model = model.trim();
-  if (typeof modelB === 'string' && modelB.trim()) next.modelB = modelB.trim();
-  if (passes !== undefined) next.passes = clampInt(passes, 1, MAX_PASSES, DEFAULT_PASSES);
   return settingsView(writeSettings(next));
 });
 
@@ -168,6 +174,11 @@ function isFreeModel(m) {
   return parseFloat(p.prompt || '0') === 0 && parseFloat(p.completion || '0') === 0;
 }
 
+// We expose only the two requested Gemma 4 vision models. Match by the live
+// name/id so we always use the correct current slug (these rotate).
+const WANTED_MODELS = [/gemma[\s-]*4[\s-]*26b[\s-]*a4b/i, /gemma[\s-]*4[\s-]*31b/i];
+const GEMMA4_FAMILY = /gemma[\s-]*4/i;
+
 ipcMain.handle('models:list', async () => {
   try {
     const headers = { 'Content-Type': 'application/json' };
@@ -181,11 +192,18 @@ ipcMain.handle('models:list', async () => {
       return { ok: false, error: `Could not load model list (HTTP ${resp.status}).` };
     }
     const json = await resp.json();
-    const models = (json.data || [])
-      .filter(isImageCapable)
+    const imageModels = (json.data || []).filter(isImageCapable);
+
+    const hay = (m) => `${m.name || ''} ${m.id || ''}`;
+    let chosen = imageModels.filter((m) => WANTED_MODELS.some((re) => re.test(hay(m))));
+    // Safety net: if the exact two aren't found, fall back to the Gemma 4 family.
+    if (chosen.length === 0) {
+      chosen = imageModels.filter((m) => GEMMA4_FAMILY.test(hay(m)));
+    }
+
+    const models = chosen
       .map((m) => ({ id: m.id, name: m.name || m.id, free: isFreeModel(m) }))
-      // free first, then alphabetical
-      .sort((a, b) => (a.free === b.free ? a.name.localeCompare(b.name) : a.free ? -1 : 1));
+      .sort((a, b) => a.name.localeCompare(b.name)); // "26b" sorts before "31b"
     return { ok: true, models };
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
@@ -246,89 +264,90 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     };
   }
 
-  const modelA = settings.model || DEFAULT_MODEL;
-  const modelB = settings.modelB || modelA;
-  const models = modelB && modelB !== modelA ? [modelA, modelB] : [modelA];
-  const passes = clampInt(settings.passes, 1, MAX_PASSES, DEFAULT_PASSES);
+  const model = settings.model || DEFAULT_MODEL;
   const sender = evt.sender;
   const dataUrl = `data:${mediaType};base64,${data}`;
   const send = (channel, msg) => {
     if (!sender.isDestroyed()) sender.send(channel, msg);
   };
 
-  const baseTask =
-    note && note.trim()
-      ? `Determine where this photo was taken, as specifically as the evidence allows.\n\nAdditional context from me: ${note.trim()}`
-      : 'Determine where this photo was taken, as specifically as the evidence allows.';
+  const extra =
+    note && note.trim() ? `\n\nKeep in mind this context from the user: ${note.trim()}` : '';
 
-  let best = ''; // most refined analysis so far
-  let prevGeo = null; // last parsed coordinates
-  let stable = 0; // consecutive passes with ~unchanged coordinates
-  let passesDone = 0;
+  // The interview: a fixed sequence of focused questions, then a final
+  // synthesis. Each question is a turn in one ongoing conversation with a
+  // single model — so later questions build on earlier answers.
+  const questions = INTERVIEW_QUESTIONS;
+  const total = questions.length + 1; // + synthesis
+  const messages = [{ role: 'system', content: INTERVIEW_SYSTEM }];
+
+  let step = 0;
   let lastUsage = null;
 
   try {
-    for (let i = 0; i < passes; i++) {
-      const model = models[i % models.length];
-      const messages = i === 0
-        ? initialMessages(dataUrl, baseTask)
-        : refineMessages(dataUrl, baseTask, best, i + 1);
+    // --- Observation questions -------------------------------------------
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i];
+      step = i + 1;
+      send('analyze:pass', { pass: step, total, label: q.label });
 
-      send('analyze:pass', { pass: i + 1, total: passes, model });
+      // Attach the image only on the first question; it stays in context.
+      const userContent =
+        i === 0
+          ? [
+              { type: 'text', text: q.text + extra },
+              { type: 'image_url', image_url: { url: dataUrl } },
+            ]
+          : q.text;
+      messages.push({ role: 'user', content: userContent });
 
-      // One pass, with retry on rate-limit / transient server errors.
-      let result = null;
-      for (let attempt = 0; attempt <= 3; attempt++) {
-        result = await callModel({ apiKey, model, messages, onDelta: (d) => send('analyze:delta', d) });
-        if (result.ok) break;
-        const transient = result.status === 429 || (result.status >= 500 && result.status < 600);
-        if (transient && attempt < 3) {
-          send('analyze:pass', { pass: i + 1, total: passes, model, retry: attempt + 1 });
-          await sleep(1500 * (attempt + 1));
-          continue;
-        }
-        break;
-      }
+      const result = await callWithRetry({
+        apiKey,
+        model,
+        messages,
+        maxTokens: 700,
+        onDelta: (d) => send('analyze:delta', d),
+        onRetry: (n) => send('analyze:pass', { pass: step, total, label: q.label, retry: n }),
+      });
 
       if (!result.ok) {
-        // If we already have at least one good pass, stop gracefully and keep it.
-        if (passesDone > 0) {
-          send('analyze:note', `Stopped early at pass ${i + 1}: ${result.error}`);
+        if (step > 1) {
+          send('analyze:note', `Stopped at question ${step}: ${result.error}`);
           break;
         }
         return { ok: false, error: result.error };
       }
-
-      passesDone = i + 1;
-      best = result.text;
+      messages.push({ role: 'assistant', content: result.text });
       lastUsage = result.usage || lastUsage;
-
-      // Convergence check: if coordinates barely move for a few passes, stop.
-      const geo = parseGeo(result.text);
-      if (geo) {
-        if (prevGeo && haversineKm(geo, prevGeo) < 5) stable += 1;
-        else stable = 0;
-        prevGeo = geo;
-        if (stable >= 3 && i >= 2) {
-          send('analyze:note', `Converged after ${i + 1} passes.`);
-          break;
-        }
-      }
     }
+
+    // --- Final synthesis --------------------------------------------------
+    step += 1;
+    send('analyze:pass', { pass: step, total, label: 'Final location', final: true });
+    messages.push({ role: 'user', content: SYNTHESIS_PROMPT });
+
+    const final = await callWithRetry({
+      apiKey,
+      model,
+      messages,
+      maxTokens: 1600,
+      onDelta: (d) => send('analyze:delta', d),
+      onRetry: (n) =>
+        send('analyze:pass', { pass: step, total, label: 'Final location', final: true, retry: n }),
+    });
+
+    if (!final.ok) return { ok: false, error: final.error };
+    lastUsage = final.usage || lastUsage;
 
     return {
       ok: true,
-      model: models.join(' + '),
-      passesDone,
+      model,
+      passesDone: step,
       usage: lastUsage
         ? { input_tokens: lastUsage.prompt_tokens, output_tokens: lastUsage.completion_tokens }
         : null,
     };
   } catch (err) {
-    if (passesDone > 0) {
-      send('analyze:note', `Stopped: ${err.message || err}`);
-      return { ok: true, model: models.join(' + '), passesDone, usage: null };
-    }
     return { ok: false, error: err.message || String(err) };
   }
 });
@@ -337,45 +356,29 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function initialMessages(dataUrl, baseTask) {
-  return [
-    { role: 'system', content: SYSTEM_PROMPT },
-    {
-      role: 'user',
-      content: [
-        { type: 'text', text: baseTask },
-        { type: 'image_url', image_url: { url: dataUrl } },
-      ],
-    },
-  ];
-}
-
-function refineMessages(dataUrl, baseTask, previous, passNumber) {
-  const instruction =
-    `${baseTask}\n\n` +
-    `This is refinement pass ${passNumber}. Below is the latest assessment of THIS SAME photo (possibly from a different analyst). ` +
-    `Re-examine the image yourself from scratch. Verify each claim against what you can actually see, correct anything wrong or overstated, ` +
-    `and push to localize MORE precisely — narrow from country → region → city → district → street/landmark, but only as far as the evidence honestly supports. ` +
-    `If you cannot improve on it, keep it. Output the full structured report again with your improved answer, ending with the GEO line.\n\n` +
-    `--- Latest assessment ---\n${previous}`;
-  return [
-    { role: 'system', content: SYSTEM_PROMPT },
-    {
-      role: 'user',
-      content: [
-        { type: 'text', text: instruction },
-        { type: 'image_url', image_url: { url: dataUrl } },
-      ],
-    },
-  ];
+// One streamed model call, retried on rate-limit / transient server errors.
+async function callWithRetry({ apiKey, model, messages, maxTokens, onDelta, onRetry }) {
+  let result = null;
+  for (let attempt = 0; attempt <= 3; attempt++) {
+    result = await callModel({ apiKey, model, messages, maxTokens, onDelta });
+    if (result.ok) return result;
+    const transient = result.status === 429 || (result.status >= 500 && result.status < 600);
+    if (transient && attempt < 3) {
+      if (onRetry) onRetry(attempt + 1);
+      await sleep(1500 * (attempt + 1));
+      continue;
+    }
+    return result;
+  }
+  return result;
 }
 
 // One streamed model call. Returns { ok, text, usage } or { ok:false, status, error }.
-async function callModel({ apiKey, model, messages, onDelta }) {
+async function callModel({ apiKey, model, messages, maxTokens, onDelta }) {
   const body = {
     model,
     stream: true,
-    max_tokens: 2000,
+    max_tokens: maxTokens || 1200,
     stream_options: { include_usage: true },
     messages,
   };
@@ -398,28 +401,6 @@ async function callModel({ apiKey, model, messages, onDelta }) {
     if (onDelta) onDelta(d);
   });
   return { ok: true, text, usage };
-}
-
-// Parse the "GEO: lat, lng" line the model is asked to emit. Returns {lat,lng} or null.
-function parseGeo(text) {
-  const m = text.match(/^\s*GEO:\s*(-?\d{1,3}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*$/im);
-  if (!m) return null;
-  const lat = parseFloat(m[1]);
-  const lng = parseFloat(m[2]);
-  if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) return { lat, lng };
-  return null;
-}
-
-// Rough great-circle distance in km, for the convergence check.
-function haversineKm(a, b) {
-  const toRad = (d) => (d * Math.PI) / 180;
-  const R = 6371;
-  const dLat = toRad(b.lat - a.lat);
-  const dLng = toRad(b.lng - a.lng);
-  const s =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
 }
 
 // Parse an OpenAI-compatible SSE stream, forwarding text deltas. Returns the
