@@ -11,6 +11,21 @@ structured location estimate with its reasoning and confidence.
 Powered by **[OpenRouter](https://openrouter.ai)** — so you can run it on **free**,
 vision-capable models.
 
+## Just open it
+
+You need [Node.js](https://nodejs.org/) installed once. Then:
+
+- **macOS:** double-click **`start.command`**
+- **Windows:** double-click **`start.bat`**
+- **Linux:** run **`./start.sh`**
+
+The launcher installs everything on first run and opens the app. After that it
+opens straight away. First launch, click **⚙ Settings**, paste your free
+[OpenRouter API key](https://openrouter.ai/keys), and Save.
+
+> macOS may warn the first time you open `start.command` — right-click it,
+> choose **Open**, then **Open** again to allow it.
+
 ## Features
 
 - **Drag & drop, paste, or browse** for a photo (JPEG, PNG, WebP, GIF)
