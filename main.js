@@ -168,6 +168,18 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     return { ok: false, error: 'No image provided.' };
   }
 
+  // HTTP header values must be printable ASCII. A common copy-paste mishap turns
+  // a hyphen in the key into a dash (– or —), which makes fetch throw a cryptic
+  // "ByteString" error. Catch it here with a clear, fixable message.
+  const apiKey = String(settings.apiKey).trim();
+  const bad = firstNonAsciiChar(apiKey);
+  if (bad) {
+    return {
+      ok: false,
+      error: `Your API key contains an invalid character (${JSON.stringify(bad.char)}) at position ${bad.index + 1}. This usually happens when copy-paste converts a hyphen "-" into a dash like "–" or "—". Open Settings and re-paste the key as plain text from openrouter.ai/keys.`,
+    };
+  }
+
   const model = settings.model || DEFAULT_MODEL;
   const sender = evt.sender;
   const dataUrl = `data:${mediaType};base64,${data}`;
@@ -198,7 +210,7 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     const resp = await fetch(OPENROUTER_URL, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${settings.apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
         // Optional OpenRouter attribution headers.
         'HTTP-Referer': 'https://github.com/Inasjackw321/geolocator-bot',
@@ -264,6 +276,16 @@ async function pumpStream(stream, onDelta) {
     }
   }
   return usage;
+}
+
+// Returns the first character that can't go in an HTTP header (outside printable
+// ASCII 0x20–0x7E), or null if the string is header-safe.
+function firstNonAsciiChar(s) {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x20 || c > 0x7e) return { index: i, code: c, char: s[i] };
+  }
+  return null;
 }
 
 async function describeHttpError(resp) {
