@@ -15,11 +15,12 @@ vision-capable models.
 
 You need [Node.js](https://nodejs.org/) installed once. Then:
 
+- **Any OS, the Python way:** run **`python run.py`** (or double-click `run.py`)
 - **macOS:** double-click **`start.command`**
 - **Windows:** double-click **`start.bat`**
 - **Linux:** run **`./start.sh`**
 
-The launcher installs everything on first run and opens the app. After that it
+All of these do the same thing — install everything on first run and open the app. After that it
 opens straight away. First launch, click **⚙ Settings**, paste your free
 [OpenRouter API key](https://openrouter.ai/keys), and Save.
 
