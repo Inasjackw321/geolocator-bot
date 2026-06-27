@@ -43,6 +43,17 @@ const DEFAULT_MODEL = 'zai-org/GLM-4.5V';
 // vision model's written answers. (huggingface.co/zai-org/GLM-5.2)
 const DEFAULT_REASONING_MODEL = 'zai-org/GLM-5.2';
 
+// Sanitize a stored model ID for Hugging Face. Old OpenRouter settings used a
+// ":free" suffix, which HF mis-reads as a provider ("provider 'free' is not
+// valid"); treat those as stale and fall back to the HF default. Real HF
+// provider pins (e.g. "zai-org/GLM-4.5V:novita") are left intact.
+function cleanModelId(id, fallback) {
+  if (typeof id !== 'string') return fallback;
+  const t = id.trim();
+  if (!t || /:free$/i.test(t)) return fallback;
+  return t;
+}
+
 const MEDIA_TYPES = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
@@ -137,8 +148,8 @@ app.on('window-all-closed', () => {
 function settingsView(s) {
   return {
     hasApiKey: Boolean(s.apiKey),
-    model: s.model || DEFAULT_MODEL,
-    reasoningModel: s.reasoningModel || DEFAULT_REASONING_MODEL,
+    model: cleanModelId(s.model, DEFAULT_MODEL),
+    reasoningModel: cleanModelId(s.reasoningModel, DEFAULT_REASONING_MODEL),
   };
 }
 
@@ -208,8 +219,8 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     };
   }
 
-  const model = settings.model || DEFAULT_MODEL; // vision model (sees the photo)
-  const reasoningModel = settings.reasoningModel || DEFAULT_REASONING_MODEL; // text-only synthesis
+  const model = cleanModelId(settings.model, DEFAULT_MODEL); // vision model (sees the photo)
+  const reasoningModel = cleanModelId(settings.reasoningModel, DEFAULT_REASONING_MODEL); // text-only synthesis
   const sender = evt.sender;
   const dataUrl = `data:${mediaType};base64,${data}`;
   const send = (channel, msg) => {
