@@ -5,11 +5,12 @@ const fs = require('fs');
 const path = require('path');
 
 // ---------------------------------------------------------------------------
-// This app talks to OpenRouter (https://openrouter.ai), which exposes an
+// This app talks to Hugging Face Inference Providers, whose router exposes an
 // OpenAI-compatible Chat Completions API. We call it with native fetch + SSE
-// streaming, so there is no SDK dependency.
+// streaming, so there is no SDK dependency. Auth uses a Hugging Face token
+// (hf_...) from https://huggingface.co/settings/tokens.
 // ---------------------------------------------------------------------------
-const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const ROUTER_URL = 'https://router.huggingface.co/v1/chat/completions';
 
 // Local settings (API key + model), stored in the OS-standard userData dir.
 // Plaintext file readable by the local user — fine for a personal desktop
@@ -33,13 +34,14 @@ function writeSettings(next) {
 }
 
 // VISION model — looks at the photo and answers the observation questions.
-// Must be image-capable. Settings limits this to the two Gemma 4 vision models.
-const DEFAULT_MODEL = 'google/gemini-2.0-flash-exp:free';
+// Must be image-capable (image-text-to-text). GLM-4.5V is live on HF Inference
+// Providers. (huggingface.co/zai-org/GLM-4.5V)
+const DEFAULT_MODEL = 'zai-org/GLM-4.5V';
 
 // REASONING model — does the final synthesis from the textual observations.
-// DeepSeek-R1 is text-only (no vision), so it never receives the image; it
-// reasons over the vision model's written answers. (huggingface.co/deepseek-ai/DeepSeek-R1)
-const DEFAULT_REASONING_MODEL = 'deepseek/deepseek-r1:free';
+// GLM-5.2 is text-only, so it never receives the image; it reasons over the
+// vision model's written answers. (huggingface.co/zai-org/GLM-5.2)
+const DEFAULT_REASONING_MODEL = 'zai-org/GLM-5.2';
 
 const MEDIA_TYPES = {
   '.jpg': 'image/jpeg',
@@ -49,8 +51,8 @@ const MEDIA_TYPES = {
   '.gif': 'image/gif',
 };
 
-// A vision model answers all the observation questions in ONE call; then a
-// reasoning model (DeepSeek-R1) synthesises a final location from those answers.
+// A vision model (GLM-4.5V) answers all the observation questions in ONE call;
+// then a reasoning model (GLM-5.2) synthesises a final location from the answers.
 const INTERVIEW_SYSTEM =
   'You are an expert geolocation analyst — a world-class GeoGuessr player combined with an OSINT investigator. ' +
   'Reason concretely and specifically from the available evidence and your world knowledge. ' +
@@ -152,58 +154,6 @@ ipcMain.handle('settings:save', (_evt, { apiKey, model, reasoningModel }) => {
   return settingsView(writeSettings(next));
 });
 
-// ---------------------------------------------------------------------------
-// IPC: live model discovery — ask OpenRouter which models currently accept
-// images, so the user never depends on a hardcoded ID that has rotated away.
-// ---------------------------------------------------------------------------
-function isImageCapable(m) {
-  const a = m.architecture || {};
-  if (Array.isArray(a.input_modalities) && a.input_modalities.includes('image')) return true;
-  if (typeof a.modality === 'string' && a.modality.includes('image')) return true;
-  return false;
-}
-
-function isFreeModel(m) {
-  const p = m.pricing || {};
-  return parseFloat(p.prompt || '0') === 0 && parseFloat(p.completion || '0') === 0;
-}
-
-// We expose only the two requested Gemma 4 vision models. Match by the live
-// name/id so we always use the correct current slug (these rotate).
-const WANTED_MODELS = [/gemma[\s-]*4[\s-]*26b[\s-]*a4b/i, /gemma[\s-]*4[\s-]*31b/i];
-const GEMMA4_FAMILY = /gemma[\s-]*4/i;
-
-ipcMain.handle('models:list', async () => {
-  try {
-    const headers = { 'Content-Type': 'application/json' };
-    const s = readSettings();
-    if (s.apiKey) {
-      const key = String(s.apiKey).trim();
-      if (!firstNonAsciiChar(key)) headers.Authorization = `Bearer ${key}`;
-    }
-    const resp = await fetch('https://openrouter.ai/api/v1/models', { headers });
-    if (!resp.ok) {
-      return { ok: false, error: `Could not load model list (HTTP ${resp.status}).` };
-    }
-    const json = await resp.json();
-    const imageModels = (json.data || []).filter(isImageCapable);
-
-    const hay = (m) => `${m.name || ''} ${m.id || ''}`;
-    let chosen = imageModels.filter((m) => WANTED_MODELS.some((re) => re.test(hay(m))));
-    // Safety net: if the exact two aren't found, fall back to the Gemma 4 family.
-    if (chosen.length === 0) {
-      chosen = imageModels.filter((m) => GEMMA4_FAMILY.test(hay(m)));
-    }
-
-    const models = chosen
-      .map((m) => ({ id: m.id, name: m.name || m.id, free: isFreeModel(m) }))
-      .sort((a, b) => a.name.localeCompare(b.name)); // "26b" sorts before "31b"
-    return { ok: true, models };
-  } catch (err) {
-    return { ok: false, error: err.message || String(err) };
-  }
-});
-
 // Open a URL in the user's real browser (only http/https).
 ipcMain.handle('open:external', (_evt, url) => {
   if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
@@ -240,7 +190,7 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
   const settings = readSettings();
 
   if (!settings.apiKey) {
-    return { ok: false, error: 'No API key set. Open Settings and paste your OpenRouter API key.' };
+    return { ok: false, error: 'No token set. Open Settings and paste your Hugging Face token (hf_…).' };
   }
   if (!data || !mediaType) {
     return { ok: false, error: 'No image provided.' };
@@ -254,7 +204,7 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
   if (bad) {
     return {
       ok: false,
-      error: `Your API key contains an invalid character (${JSON.stringify(bad.char)}) at position ${bad.index + 1}. This usually happens when copy-paste converts a hyphen "-" into a dash like "–" or "—". Open Settings and re-paste the key as plain text from openrouter.ai/keys.`,
+      error: `Your token contains an invalid character (${JSON.stringify(bad.char)}) at position ${bad.index + 1}. This usually happens when copy-paste converts a hyphen "-" into a dash like "–" or "—". Open Settings and re-paste the token as plain text from huggingface.co/settings/tokens.`,
     };
   }
 
@@ -269,9 +219,9 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
   const extra =
     note && note.trim() ? `\n\nKeep in mind this context from the user: ${note.trim()}` : '';
 
-  // To stay well under free-tier rate limits, this is just TWO calls:
-  //   1) one vision call that asks ALL the observation questions at once
-  //   2) one DeepSeek-R1 call that reasons over those observations (text-only)
+  // Two calls total (keeps provider rate limits happy):
+  //   1) one vision call (GLM-4.5V) that asks ALL the observation questions
+  //   2) one reasoning call (GLM-5.2) over those observations (text-only)
   const total = 2;
   let lastUsage = null;
 
@@ -301,7 +251,7 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     if (!obs.ok) return { ok: false, error: obs.error };
     lastUsage = obs.usage || lastUsage;
 
-    // --- 2) DeepSeek-R1 synthesis (text-only) ----------------------------
+    // --- 2) Reasoning synthesis (GLM-5.2, text-only) ---------------------
     send('analyze:pass', { pass: 2, total, label: 'Final reasoning', final: true, model: reasoningModel });
     const synthUser =
       'A vision analyst examined a photograph and reported these observations:\n\n' +
@@ -369,16 +319,13 @@ async function callModel({ apiKey, model, messages, maxTokens, onDelta }) {
     model,
     stream: true,
     max_tokens: maxTokens || 1200,
-    stream_options: { include_usage: true },
     messages,
   };
-  const resp = await fetch(OPENROUTER_URL, {
+  const resp = await fetch(ROUTER_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
-      'HTTP-Referer': 'https://github.com/Inasjackw321/geolocator-bot',
-      'X-Title': 'Geolocator Bot',
     },
     body: JSON.stringify(body),
   });
@@ -474,21 +421,21 @@ async function describeHttpError(resp) {
   }
   switch (resp.status) {
     case 401:
-      return 'Authentication failed — check that your OpenRouter API key is correct.';
+      return 'Authentication failed — check your Hugging Face token (it needs the "Make calls to Inference Providers" permission). Re-create one at huggingface.co/settings/tokens.';
     case 402:
-      return 'Payment required — this model needs credits, or your free quota is exhausted.';
+      return 'Payment required — your Hugging Face Inference Providers credits are exhausted. Add a payment method / credits in huggingface.co/settings/billing.';
     case 403:
-      return detail || 'Request blocked (403). The model may require privacy settings to be enabled in your OpenRouter account.';
+      return detail || 'Request blocked (403). Your token may lack Inference Providers permission, or the model is gated — accept its terms on its model page.';
     case 404:
-      return `Model not found (404). The free model ID may have changed — pick another in Settings. ${detail}`.trim();
+      return `Model not found, or not served by any Inference Provider (404). Check the model ID in Settings (e.g. zai-org/GLM-4.5V). ${detail}`.trim();
     case 429:
       return (
-        'Rate limited by OpenRouter\'s free tier even after several retries. Free models cap requests per minute AND per day. ' +
-        'Options: wait a minute and try again; add credits at openrouter.ai/credits (≥ $10 raises the free daily limit to ~1000/day); or switch the reasoning model in Settings to a paid one. ' +
+        'Rate limited by Hugging Face Inference Providers even after several retries. ' +
+        'Wait a minute and try again, or add credits at huggingface.co/settings/billing to raise your limits. ' +
         (detail ? `(${detail})` : '')
       ).trim();
     default:
-      if (resp.status >= 500) return `OpenRouter service error (${resp.status}). Try again shortly. ${detail}`.trim();
+      if (resp.status >= 500) return `Inference provider error (${resp.status}). Try again shortly. ${detail}`.trim();
       return detail || `Request failed (${resp.status}).`;
   }
 }

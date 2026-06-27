@@ -75,29 +75,25 @@
     <div id="settings-modal" class="modal-backdrop hidden">
       <div class="modal">
         <h2>Settings</h2>
-        <label class="field-label" for="api-key">OpenRouter API key</label>
-        <input id="api-key" type="password" class="text-input" placeholder="sk-or-v1-..." />
+        <label class="field-label" for="api-key">Hugging Face token</label>
+        <input id="api-key" type="password" class="text-input" placeholder="hf_..." />
         <p class="muted small">
-          Stored locally on this machine only. Get a free key at
-          <code>openrouter.ai/keys</code>.
+          Stored locally on this machine only. Create one (with the
+          <em>“Make calls to Inference Providers”</em> permission) at
+          <code>huggingface.co/settings/tokens</code>.
         </p>
 
         <label class="field-label" for="model-select">Vision model (looks at the photo)</label>
-        <div class="model-row">
-          <select id="model-select" class="text-input"></select>
-          <button id="model-reload" class="ghost-btn" type="button" title="Reload model list">
-            ↻
-          </button>
-        </div>
-        <p id="model-status" class="muted small"></p>
+        <input id="model-select" type="text" class="text-input" placeholder="zai-org/GLM-4.5V" />
 
         <label class="field-label" for="reasoning-input">Reasoning model (final synthesis)</label>
-        <input id="reasoning-input" type="text" class="text-input" placeholder="deepseek/deepseek-r1:free" />
+        <input id="reasoning-input" type="text" class="text-input" placeholder="zai-org/GLM-5.2" />
         <p class="muted small">
-          A Gemma vision model answers questions about the photo; then this model
-          reasons over those answers to decide the final location.
-          <strong>DeepSeek-R1 is text-only</strong>, so it never sees the image —
-          it only reads the descriptions. You can put any OpenRouter model ID here.
+          The vision model describes the photo; then the reasoning model deduces
+          the location from that description. Use any Hugging Face model ID served
+          by Inference Providers — the vision one must be image-capable
+          (<code>image-text-to-text</code>); <strong>GLM-5.2 is text-only</strong>,
+          so it never sees the image.
         </p>
 
         <div class="modal-actions">

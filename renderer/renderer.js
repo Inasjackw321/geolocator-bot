@@ -17,11 +17,9 @@ const modelBadge = document.getElementById('model-badge');
 const settingsBtn = document.getElementById('settings-btn');
 const settingsModal = document.getElementById('settings-modal');
 const apiKeyInput = document.getElementById('api-key');
-const modelSelect = document.getElementById('model-select');
+const modelInput = document.getElementById('model-select');
 const settingsSave = document.getElementById('settings-save');
 const settingsCancel = document.getElementById('settings-cancel');
-const modelReload = document.getElementById('model-reload');
-const modelStatus = document.getElementById('model-status');
 const reasoningInput = document.getElementById('reasoning-input');
 
 const mapWrap = document.getElementById('map-wrap');
@@ -115,7 +113,7 @@ function stripGeoLine(text) {
   return text.replace(/^\s*GEO:.*$/gim, '').trimEnd();
 }
 
-// Reasoning models (e.g. DeepSeek-R1) may emit a <think>...</think> chain of
+// Reasoning models (e.g. GLM-5.2) may emit a <think>...</think> chain of
 // thought. Hide it from the displayed answer, including a not-yet-closed block
 // that's still streaming.
 function stripThink(text) {
@@ -137,16 +135,15 @@ function bestGuessLine(text) {
 
 // --- Settings ---------------------------------------------------------------
 function shortModelName(id) {
-  // "google/gemini-2.0-flash-exp:free" -> "gemini-2.0-flash-exp"
-  return String(id).split('/').pop().replace(/:free$/, '');
+  // "zai-org/GLM-4.5V" -> "GLM-4.5V"
+  return String(id).split('/').pop().replace(/:.*$/, '');
 }
 
 async function refreshSettingsBadge() {
   const s = await window.api.getSettings();
-  modelBadge.textContent = s.hasApiKey ? shortModelName(s.model) : 'no API key';
+  modelBadge.textContent = s.hasApiKey ? shortModelName(s.model) : 'no token';
   modelBadge.title = s.model;
   modelBadge.style.color = s.hasApiKey ? '' : 'var(--warn)';
-  modelSelect.value = s.model;
   return s;
 }
 
@@ -155,61 +152,12 @@ async function openSettings() {
   apiKeyInput.value = '';
   apiKeyInput.placeholder = s.hasApiKey
     ? '•••••••• saved — leave blank to keep it'
-    : 'sk-or-v1-...';
-  reasoningInput.value = s.reasoningModel || 'deepseek/deepseek-r1:free';
+    : 'hf_...';
+  modelInput.value = s.model || 'zai-org/GLM-4.5V';
+  reasoningInput.value = s.reasoningModel || 'zai-org/GLM-5.2';
   settingsModal.classList.remove('hidden');
   apiKeyInput.focus();
-  loadModels(); // populate the dropdown with the available Gemma vision models
 }
-
-// Pull the live list of image-capable models from OpenRouter and fill the
-// dropdown. Keeps the user's saved model selected even if it isn't in the list.
-function fillSelect(select, models, selectedId) {
-  select.innerHTML = '';
-  let list = models;
-  if (selectedId && !list.some((m) => m.id === selectedId)) {
-    list = [{ id: selectedId, name: `${selectedId} (saved)`, free: false }, ...list];
-  }
-  for (const m of list) {
-    const opt = document.createElement('option');
-    opt.value = m.id;
-    opt.textContent = m.free ? `${m.name} — free` : m.name;
-    select.appendChild(opt);
-  }
-  select.value =
-    selectedId && list.some((m) => m.id === selectedId) ? selectedId : list[0].id;
-}
-
-async function loadModels() {
-  modelReload.disabled = true;
-  modelStatus.style.color = '';
-  modelStatus.textContent = 'Loading models from OpenRouter…';
-  modelSelect.innerHTML = '';
-
-  const [res, settings] = await Promise.all([
-    window.api.listModels(),
-    window.api.getSettings(),
-  ]);
-  modelReload.disabled = false;
-
-  if (!res.ok || !res.models || res.models.length === 0) {
-    const opt = document.createElement('option');
-    opt.value = settings.model || '';
-    opt.textContent = settings.model ? `${settings.model} (list unavailable)` : 'No models loaded';
-    modelSelect.appendChild(opt);
-    modelStatus.style.color = 'var(--warn)';
-    modelStatus.textContent = res.ok
-      ? 'Could not find the Gemma models right now. Check your connection and retry (↻).'
-      : `Could not load models: ${res.error}`;
-    return;
-  }
-
-  fillSelect(modelSelect, res.models, settings.model);
-  modelStatus.style.color = '';
-  modelStatus.textContent = `${res.models.length} model${res.models.length === 1 ? '' : 's'} available`;
-}
-
-modelReload.addEventListener('click', loadModels);
 
 function closeSettings() {
   settingsModal.classList.add('hidden');
@@ -224,7 +172,7 @@ settingsModal.addEventListener('click', (e) => {
 settingsSave.addEventListener('click', async () => {
   await window.api.saveSettings({
     apiKey: apiKeyInput.value, // blank is ignored by main; keeps existing key
-    model: modelSelect.value,
+    model: modelInput.value,
     reasoningModel: reasoningInput.value,
   });
   closeSettings();
@@ -501,6 +449,6 @@ function renderMarkdown(md) {
   const s = await refreshSettingsBadge();
   if (!s.hasApiKey) {
     leftStatus.style.color = 'var(--warn)';
-    leftStatus.textContent = 'Add your OpenRouter API key in Settings to begin.';
+    leftStatus.textContent = 'Add your Hugging Face token in Settings to begin.';
   }
 })();
