@@ -392,8 +392,8 @@ async function runAnalysis() {
     resultEl.innerHTML = '';
     leftStatus.style.color = '';
     leftStatus.textContent = info.final
-      ? `Reasoning with ${shortModelName(info.model || '')} (${info.pass}/${info.total})…`
-      : `Question ${info.pass}/${info.total}: ${info.label}…`;
+      ? `Step ${info.pass}/${info.total}: reasoning with ${shortModelName(info.model || '')}…`
+      : `Step ${info.pass}/${info.total}: ${info.label}…`;
   });
 
   const offNote = window.api.onNote((text) => {

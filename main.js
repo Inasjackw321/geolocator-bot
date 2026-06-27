@@ -49,39 +49,25 @@ const MEDIA_TYPES = {
   '.gif': 'image/gif',
 };
 
-// The model is interviewed with a series of focused questions, then asked to
-// synthesise a final, specific location. One model, one ongoing conversation.
+// A vision model answers all the observation questions in ONE call; then a
+// reasoning model (DeepSeek-R1) synthesises a final location from those answers.
 const INTERVIEW_SYSTEM =
-  'You are an expert geolocation analyst — a world-class GeoGuessr player combined with an OSINT investigator — examining one photograph through a series of focused questions. ' +
-  'Answer each question concretely and specifically, based only on what is actually visible plus your world knowledge. ' +
-  'Be willing to name specific countries, regions, cities, and districts. Note your uncertainty, but do not refuse to commit. Keep each answer focused on the question asked.';
+  'You are an expert geolocation analyst — a world-class GeoGuessr player combined with an OSINT investigator. ' +
+  'Reason concretely and specifically from the available evidence and your world knowledge. ' +
+  'Be willing to name specific countries, regions, cities, and districts. Note your uncertainty, but do not refuse to commit.';
 
-const INTERVIEW_QUESTIONS = [
-  {
-    label: 'Text & language',
-    text: 'Question 1: Read every piece of text visible in the image — signs, shopfronts, posters, billboards, license plates, graffiti. Transcribe whatever you can make out. Identify the language(s), script, and alphabet, and any spelling conventions. Which countries or regions do these point to?',
-  },
-  {
-    label: 'Architecture & built environment',
-    text: 'Question 2: Describe the buildings and built environment — architectural style, construction materials, roof shapes, window styles, balconies, fences, and whether it looks urban, suburban, or rural. Which part of the world do these most resemble?',
-  },
-  {
-    label: 'Nature & climate',
-    text: 'Question 3: Describe the natural environment — vegetation and any identifiable plant or tree species, crops, terrain, geology, soil colour, the sky, and the apparent climate or biome. What latitudes and regions are consistent with this?',
-  },
-  {
-    label: 'Roads & infrastructure',
-    text: 'Question 4: Describe the road and traffic infrastructure — which side of the road vehicles drive on, lane markings, the shape/colour/design of road signs, bollards, guardrails, traffic lights, kerbs, utility poles and overhead wiring. Which countries use these specific conventions?',
-  },
-  {
-    label: 'Vehicles, plates & brands',
-    text: 'Question 5: Describe any vehicles (make/model/style) and their license plates (shape, colour, format), plus any visible brand names, shop chains, or commercial signage. Which countries or markets do these indicate?',
-  },
-  {
-    label: 'Landmarks, sun & terrain',
-    text: 'Question 6: Note anything that helps pin the exact spot — recognisable landmarks, mountains, coastlines, rivers, the position of the sun and shadows (hemisphere/time of day), and any distinctive geographic features.',
-  },
-];
+// One prompt that asks every observation question at once (keeps it to a single
+// API call instead of one per question — far gentler on free-tier rate limits).
+const OBSERVE_PROMPT = `Examine this photograph carefully and report every clue that could help locate where it was taken. Work through each of these:
+
+1. Text & language — read and transcribe any visible text (signs, shopfronts, posters, license plates, graffiti); identify the language, script, and what region it points to.
+2. Architecture & built environment — building styles, materials, roof shapes, window styles, and whether it looks urban, suburban, or rural.
+3. Nature & climate — vegetation and any identifiable plant/tree species, terrain, geology, soil colour, sky, and the apparent climate/biome.
+4. Roads & infrastructure — which side of the road traffic drives on, lane markings, road-sign shapes/colours, bollards, guardrails, utility poles and wiring.
+5. Vehicles, plates & brands — vehicle types, license-plate shape/colour/format, and any visible brand names or shop chains.
+6. Landmarks, sun & terrain — recognisable landmarks, mountains, coastlines, the sun's position/shadows, and any distinctive geographic features.
+
+Be concrete and specific, and name candidate countries/regions where you can. This step is observation only — describe what you see; do not give the final single answer yet.`;
 
 const REPORT_FORMAT = `## Best guess
 The MOST SPECIFIC location the evidence honestly supports. Always give the country and region; push further to city, then neighbourhood/district, then a specific street, road, or landmark whenever the clues justify it. Be as precise as the evidence allows — but never invent specificity you can't defend.
@@ -107,7 +93,7 @@ If you genuinely cannot estimate coordinates, output:
 GEO: none`;
 
 const SYNTHESIS_PROMPT =
-  'Final question: Combine ALL of your answers above into a single conclusion. Determine the most specific location this photo was taken, weighing the strongest clues most heavily and discarding weak guesses. ' +
+  'Based ONLY on the observations above, determine the most specific location this photo was taken, weighing the strongest clues most heavily and discarding weak ones. ' +
   'Respond in Markdown using EXACTLY this structure:\n\n' +
   REPORT_FORMAT;
 
@@ -283,88 +269,64 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
   const extra =
     note && note.trim() ? `\n\nKeep in mind this context from the user: ${note.trim()}` : '';
 
-  // The interview: a fixed sequence of focused questions, then a final
-  // synthesis. Each question is a turn in one ongoing conversation with a
-  // single model — so later questions build on earlier answers.
-  const questions = INTERVIEW_QUESTIONS;
-  const total = questions.length + 1; // + synthesis
-  const messages = [{ role: 'system', content: INTERVIEW_SYSTEM }];
-
-  let step = 0;
+  // To stay well under free-tier rate limits, this is just TWO calls:
+  //   1) one vision call that asks ALL the observation questions at once
+  //   2) one DeepSeek-R1 call that reasons over those observations (text-only)
+  const total = 2;
   let lastUsage = null;
 
+  const onRetry = (label, model, info) =>
+    send('analyze:note', `${label}: rate-limited, waiting ${info.waitSec}s (retry ${info.attempt})…`);
+
   try {
-    // --- Observation questions -------------------------------------------
-    for (let i = 0; i < questions.length; i++) {
-      const q = questions[i];
-      step = i + 1;
-      send('analyze:pass', { pass: step, total, label: q.label });
+    // --- 1) Vision observation (all questions in one prompt) -------------
+    send('analyze:pass', { pass: 1, total, label: 'Examining the photo', model });
+    const obs = await callWithRetry({
+      apiKey,
+      model,
+      messages: [
+        { role: 'system', content: INTERVIEW_SYSTEM },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: OBSERVE_PROMPT + extra },
+            { type: 'image_url', image_url: { url: dataUrl } },
+          ],
+        },
+      ],
+      maxTokens: 1400,
+      onDelta: (d) => send('analyze:delta', d),
+      onRetry: (info) => onRetry('Examining the photo', model, info),
+    });
+    if (!obs.ok) return { ok: false, error: obs.error };
+    lastUsage = obs.usage || lastUsage;
 
-      // Attach the image only on the first question; it stays in context.
-      const userContent =
-        i === 0
-          ? [
-              { type: 'text', text: q.text + extra },
-              { type: 'image_url', image_url: { url: dataUrl } },
-            ]
-          : q.text;
-      messages.push({ role: 'user', content: userContent });
-
-      const result = await callWithRetry({
-        apiKey,
-        model,
-        messages,
-        maxTokens: 700,
-        onDelta: (d) => send('analyze:delta', d),
-        onRetry: (n) => send('analyze:pass', { pass: step, total, label: q.label, retry: n }),
-      });
-
-      if (!result.ok) {
-        if (step > 1) {
-          send('analyze:note', `Stopped at question ${step}: ${result.error}`);
-          break;
-        }
-        return { ok: false, error: result.error };
-      }
-      messages.push({ role: 'assistant', content: result.text });
-      lastUsage = result.usage || lastUsage;
-    }
-
-    // --- Final synthesis (DeepSeek-R1, text-only) -------------------------
-    // R1 can't see images, so strip the photo and hand it a pure-text
-    // transcript of the vision model's answers to reason over.
-    step += 1;
-    send('analyze:pass', { pass: step, total, label: 'Final reasoning', final: true, model: reasoningModel });
-
-    const synthMessages = [
-      ...toTextOnly(messages),
-      { role: 'user', content: SYNTHESIS_PROMPT },
-    ];
+    // --- 2) DeepSeek-R1 synthesis (text-only) ----------------------------
+    send('analyze:pass', { pass: 2, total, label: 'Final reasoning', final: true, model: reasoningModel });
+    const synthUser =
+      'A vision analyst examined a photograph and reported these observations:\n\n' +
+      obs.text +
+      '\n\n' +
+      SYNTHESIS_PROMPT;
 
     const final = await callWithRetry({
       apiKey,
       model: reasoningModel,
-      messages: synthMessages,
+      messages: [
+        { role: 'system', content: INTERVIEW_SYSTEM },
+        { role: 'user', content: synthUser },
+      ],
       maxTokens: 2000,
       onDelta: (d) => send('analyze:delta', d),
-      onRetry: (n) =>
-        send('analyze:pass', {
-          pass: step,
-          total,
-          label: 'Final reasoning',
-          final: true,
-          model: reasoningModel,
-          retry: n,
-        }),
+      onRetry: (info) => onRetry('Final reasoning', reasoningModel, info),
     });
-
     if (!final.ok) return { ok: false, error: final.error };
     lastUsage = final.usage || lastUsage;
 
     return {
       ok: true,
       model: `${model} + ${reasoningModel}`,
-      passesDone: step,
+      passesDone: total,
       usage: lastUsage
         ? { input_tokens: lastUsage.prompt_tokens, output_tokens: lastUsage.completion_tokens }
         : null,
@@ -374,35 +336,26 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
   }
 });
 
-// Convert a conversation to text-only: any array-valued (multimodal) content is
-// reduced to just its text parts, so a model without vision can consume it.
-function toTextOnly(messages) {
-  return messages.map((m) => {
-    if (Array.isArray(m.content)) {
-      const text = m.content
-        .filter((c) => c.type === 'text')
-        .map((c) => c.text)
-        .join('\n');
-      return { role: m.role, content: text };
-    }
-    return m;
-  });
-}
-
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// One streamed model call, retried on rate-limit / transient server errors.
+const MAX_RETRIES = 5;
+
+// One streamed model call, retried on rate-limit / transient server errors,
+// honoring the server's Retry-After when present.
 async function callWithRetry({ apiKey, model, messages, maxTokens, onDelta, onRetry }) {
   let result = null;
-  for (let attempt = 0; attempt <= 3; attempt++) {
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     result = await callModel({ apiKey, model, messages, maxTokens, onDelta });
     if (result.ok) return result;
     const transient = result.status === 429 || (result.status >= 500 && result.status < 600);
-    if (transient && attempt < 3) {
-      if (onRetry) onRetry(attempt + 1);
-      await sleep(1500 * (attempt + 1));
+    if (transient && attempt < MAX_RETRIES) {
+      // Prefer the server's Retry-After; otherwise exponential backoff.
+      const backoff = Math.min(60, 3 * Math.pow(2, attempt)); // 3,6,12,24,48s
+      const waitSec = result.retryAfter ? Math.min(60, result.retryAfter) : backoff;
+      if (onRetry) onRetry({ attempt: attempt + 1, waitSec });
+      await sleep(waitSec * 1000);
       continue;
     }
     return result;
@@ -410,7 +363,7 @@ async function callWithRetry({ apiKey, model, messages, maxTokens, onDelta, onRe
   return result;
 }
 
-// One streamed model call. Returns { ok, text, usage } or { ok:false, status, error }.
+// One streamed model call. Returns { ok, text, usage } or { ok:false, status, retryAfter, error }.
 async function callModel({ apiKey, model, messages, maxTokens, onDelta }) {
   const body = {
     model,
@@ -430,7 +383,12 @@ async function callModel({ apiKey, model, messages, maxTokens, onDelta }) {
     body: JSON.stringify(body),
   });
   if (!resp.ok || !resp.body) {
-    return { ok: false, status: resp.status, error: await describeHttpError(resp) };
+    return {
+      ok: false,
+      status: resp.status,
+      retryAfter: parseRetryAfter(resp.headers),
+      error: await describeHttpError(resp),
+    };
   }
   let text = '';
   const usage = await pumpStream(resp.body, (d) => {
@@ -438,6 +396,23 @@ async function callModel({ apiKey, model, messages, maxTokens, onDelta }) {
     if (onDelta) onDelta(d);
   });
   return { ok: true, text, usage };
+}
+
+// Read Retry-After (seconds, or an HTTP date) or X-RateLimit-Reset (ms epoch).
+function parseRetryAfter(headers) {
+  const ra = headers.get('retry-after');
+  if (ra) {
+    const secs = parseInt(ra, 10);
+    if (Number.isFinite(secs)) return secs;
+    const when = Date.parse(ra);
+    if (Number.isFinite(when)) return Math.max(0, Math.ceil((when - Date.now()) / 1000));
+  }
+  const reset = headers.get('x-ratelimit-reset');
+  if (reset) {
+    const ms = parseInt(reset, 10);
+    if (Number.isFinite(ms)) return Math.max(0, Math.ceil((ms - Date.now()) / 1000));
+  }
+  return null;
 }
 
 // Parse an OpenAI-compatible SSE stream, forwarding text deltas. Returns the
@@ -507,7 +482,11 @@ async function describeHttpError(resp) {
     case 404:
       return `Model not found (404). The free model ID may have changed — pick another in Settings. ${detail}`.trim();
     case 429:
-      return 'Rate limited — free models have tight limits. Wait a bit and try again, or pick another model.';
+      return (
+        'Rate limited by OpenRouter\'s free tier even after several retries. Free models cap requests per minute AND per day. ' +
+        'Options: wait a minute and try again; add credits at openrouter.ai/credits (≥ $10 raises the free daily limit to ~1000/day); or switch the reasoning model in Settings to a paid one. ' +
+        (detail ? `(${detail})` : '')
+      ).trim();
     default:
       if (resp.status >= 500) return `OpenRouter service error (${resp.status}). Try again shortly. ${detail}`.trim();
       return detail || `Request failed (${resp.status}).`;

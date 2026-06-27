@@ -30,11 +30,12 @@ opens straight away. First launch, click **⚙ Settings**, paste your free
 ## Features
 
 - **Drag & drop, paste, or browse** for a photo (JPEG, PNG, WebP, GIF)
-- **Vision + reasoning split** — a Gemma **vision** model answers a sequence of
-  focused questions about the photo (text/language, architecture, nature/climate,
-  roads, vehicles & brands, landmarks/sun), then **DeepSeek-R1** reasons over those
-  answers to deduce one *specific* location. (R1 is text-only, so it reads the
-  descriptions rather than the image.)
+- **Vision + reasoning split (only 2 API calls)** — a Gemma **vision** model
+  answers all the observation questions in one call (text/language, architecture,
+  nature/climate, roads, vehicles & brands, landmarks/sun), then **DeepSeek-R1**
+  reasons over those answers in a second call to deduce one *specific* location.
+  (R1 is text-only, so it reads the descriptions rather than the image.) Two calls
+  keeps it well under free-tier rate limits.
 - **Streamed analysis** — each question and its answer appear live, with a
   "Question X/Y" progress indicator
 - **Result map** — drops a pin at the model's estimated coordinates and refines it
@@ -110,14 +111,17 @@ renderer (UI)  ──IPC──▶  main process  ──HTTPS──▶  OpenRoute
 - The model is asked to end its answer with a `GEO: <lat>, <lng>` line; the app
   parses that and drops a pin on a bundled **Leaflet + OpenStreetMap** map. Your
   key is saved once in `settings.json` and reused on every launch.
-- **Interview flow:** the **vision** model is asked six focused observation
-  questions (text/language, architecture, nature/climate, roads, vehicles & brands,
-  landmarks/sun) in a single ongoing conversation. Then the conversation is reduced
-  to a **text-only transcript** (the image is removed) and handed to the
-  **reasoning** model (DeepSeek-R1) for a seventh **synthesis** step that produces
-  the final structured report + `GEO` line — seven calls total. On a rate-limit it
-  backs off and retries. R1's `<think>` reasoning is hidden from the displayed
-  answer.
+- **Two-call flow:** call 1 — the **vision** model gets one prompt listing all six
+  observation topics and replies with a thorough description. Call 2 — those
+  observations (text only) plus a report instruction go to the **reasoning** model
+  (DeepSeek-R1), which produces the final structured report + `GEO` line. R1's
+  `<think>` reasoning is hidden from the displayed answer.
+- **Rate-limit handling:** on a `429`/`5xx` the app honors the server's
+  `Retry-After` header (or backs off 3→6→12→24→48s, up to 5 retries) and shows a
+  "waiting Ns" status. Free OpenRouter models are limited **per minute and per
+  day** — if you still get rate-limited, wait a minute, add credits at
+  `openrouter.ai/credits` (≥ $10 raises the free daily cap to ~1000/day), or point
+  the reasoning model at a paid ID in Settings.
 
 ## Packaging a standalone app (optional)
 
