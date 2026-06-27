@@ -30,10 +30,11 @@ opens straight away. First launch, click **⚙ Settings**, paste your free
 ## Features
 
 - **Drag & drop, paste, or browse** for a photo (JPEG, PNG, WebP, GIF)
-- **Question-by-question interview** — instead of one big prompt, the app asks the
-  AI a sequence of focused questions (text/language, architecture, nature/climate,
-  roads, vehicles & brands, landmarks/sun), then a final synthesis question that
-  combines the answers into one *specific* location.
+- **Vision + reasoning split** — a Gemma **vision** model answers a sequence of
+  focused questions about the photo (text/language, architecture, nature/climate,
+  roads, vehicles & brands, landmarks/sun), then **DeepSeek-R1** reasons over those
+  answers to deduce one *specific* location. (R1 is text-only, so it reads the
+  descriptions rather than the image.)
 - **Streamed analysis** — each question and its answer appear live, with a
   "Question X/Y" progress indicator
 - **Result map** — drops a pin at the model's estimated coordinates and refines it
@@ -65,17 +66,21 @@ and save. Then drop a photo in and click **Locate photo**.
 This app uses OpenRouter's OpenAI-compatible API, so any vision-capable model works.
 The Settings dropdown ships with these **free** options:
 
-**The Settings dropdown offers only the two Gemma 4 vision models** — it queries
-`openrouter.ai/api/v1/models` live and matches them by name, so it always uses the
-correct current ID even if the slug rotates:
+Two models work together:
 
-| Model | Notes |
-| --- | --- |
-| `Google: Gemma 4 26B A4B (free)` | Lighter, faster. |
-| `Google: Gemma 4 31B (free)` | Larger, a bit stronger. |
+- **Vision model** (the dropdown) — one of the two Gemma 4 vision models, matched
+  live from `openrouter.ai/api/v1/models` so the ID stays correct even if the slug
+  rotates. This model *sees* the photo and answers the observation questions.
 
-Hit **↻** to refresh. Pick whichever you prefer — the whole interview runs on that
-one model.
+  | Vision model | Notes |
+  | --- | --- |
+  | `Google: Gemma 4 26B A4B (free)` | Lighter, faster. |
+  | `Google: Gemma 4 31B (free)` | Larger, a bit stronger. |
+
+- **Reasoning model** (text field, default `deepseek/deepseek-r1:free`) — does the
+  final synthesis. **DeepSeek-R1 is text-only**, so it never receives the image; it
+  reasons over the vision model's written answers to pick the most specific
+  location. You can swap in any OpenRouter model ID here.
 | `qwen/qwen-2.5-vl-72b-instruct:free` | Strong dedicated vision model. |
 | `meta-llama/llama-4-maverick:free` | Strong multimodal with good world knowledge. |
 | `mistralai/mistral-small-3.2-24b-instruct:free` | Lighter, still vision-capable. |
@@ -105,12 +110,14 @@ renderer (UI)  ──IPC──▶  main process  ──HTTPS──▶  OpenRoute
 - The model is asked to end its answer with a `GEO: <lat>, <lng>` line; the app
   parses that and drops a pin on a bundled **Leaflet + OpenStreetMap** map. Your
   key is saved once in `settings.json` and reused on every launch.
-- **Interview flow:** one model is asked six focused observation questions
-  (text/language, architecture, nature/climate, roads, vehicles & brands,
-  landmarks/sun) in a single ongoing conversation, then a seventh **synthesis**
-  question that merges the answers into the final structured report + `GEO` line —
-  seven calls total. On a rate-limit it backs off and retries, keeping earlier
-  answers. The image is sent once (on the first question) and stays in context.
+- **Interview flow:** the **vision** model is asked six focused observation
+  questions (text/language, architecture, nature/climate, roads, vehicles & brands,
+  landmarks/sun) in a single ongoing conversation. Then the conversation is reduced
+  to a **text-only transcript** (the image is removed) and handed to the
+  **reasoning** model (DeepSeek-R1) for a seventh **synthesis** step that produces
+  the final structured report + `GEO` line — seven calls total. On a rate-limit it
+  backs off and retries. R1's `<think>` reasoning is hidden from the displayed
+  answer.
 
 ## Packaging a standalone app (optional)
 

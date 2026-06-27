@@ -22,6 +22,7 @@ const settingsSave = document.getElementById('settings-save');
 const settingsCancel = document.getElementById('settings-cancel');
 const modelReload = document.getElementById('model-reload');
 const modelStatus = document.getElementById('model-status');
+const reasoningInput = document.getElementById('reasoning-input');
 
 const mapWrap = document.getElementById('map-wrap');
 const mapLabel = document.getElementById('map-label');
@@ -114,6 +115,20 @@ function stripGeoLine(text) {
   return text.replace(/^\s*GEO:.*$/gim, '').trimEnd();
 }
 
+// Reasoning models (e.g. DeepSeek-R1) may emit a <think>...</think> chain of
+// thought. Hide it from the displayed answer, including a not-yet-closed block
+// that's still streaming.
+function stripThink(text) {
+  let t = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  const open = t.search(/<think>/i);
+  if (open !== -1) t = t.slice(0, open);
+  return t;
+}
+
+function cleanForDisplay(text) {
+  return stripThink(stripGeoLine(text));
+}
+
 // Pull the "Best guess" line for the map popup, if present.
 function bestGuessLine(text) {
   const m = text.match(/##\s*Best guess\s*\n+([^\n]+)/i);
@@ -141,6 +156,7 @@ async function openSettings() {
   apiKeyInput.placeholder = s.hasApiKey
     ? '•••••••• saved — leave blank to keep it'
     : 'sk-or-v1-...';
+  reasoningInput.value = s.reasoningModel || 'deepseek/deepseek-r1:free';
   settingsModal.classList.remove('hidden');
   apiKeyInput.focus();
   loadModels(); // populate the dropdown with the available Gemma vision models
@@ -209,6 +225,7 @@ settingsSave.addEventListener('click', async () => {
   await window.api.saveSettings({
     apiKey: apiKeyInput.value, // blank is ignored by main; keeps existing key
     model: modelSelect.value,
+    reasoningModel: reasoningInput.value,
   });
   closeSettings();
   await refreshSettingsBadge();
@@ -350,7 +367,10 @@ async function runAnalysis() {
 
   function render() {
     const heading = curLabel && !curFinal ? `## ${curLabel}\n\n` : '';
-    resultEl.innerHTML = renderMarkdown(heading + stripGeoLine(raw));
+    const body = cleanForDisplay(raw);
+    // During R1's silent "thinking" phase there may be no visible text yet.
+    const placeholder = curFinal && !body.trim() ? '_Reasoning…_' : '';
+    resultEl.innerHTML = renderMarkdown(heading + (body || placeholder));
     resultEl.scrollTop = resultEl.scrollHeight;
   }
 
@@ -372,7 +392,7 @@ async function runAnalysis() {
     resultEl.innerHTML = '';
     leftStatus.style.color = '';
     leftStatus.textContent = info.final
-      ? `Synthesising final location (${info.pass}/${info.total})…`
+      ? `Reasoning with ${shortModelName(info.model || '')} (${info.pass}/${info.total})…`
       : `Question ${info.pass}/${info.total}: ${info.label}…`;
   });
 
@@ -406,10 +426,11 @@ async function runAnalysis() {
 
   // Final synthesis: render the structured answer and map it.
   curFinal = true;
-  resultEl.innerHTML = renderMarkdown(stripGeoLine(raw));
-  const coords = parseCoords(raw);
+  const finalText = stripThink(raw);
+  resultEl.innerHTML = renderMarkdown(cleanForDisplay(raw));
+  const coords = parseCoords(finalText);
   if (coords) {
-    showLocation(coords.lat, coords.lng, bestGuessLine(raw));
+    showLocation(coords.lat, coords.lng, bestGuessLine(finalText));
     leftStatus.style.color = '';
     leftStatus.textContent = 'Done.';
   } else {

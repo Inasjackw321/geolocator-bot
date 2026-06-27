@@ -82,7 +82,7 @@
           <code>openrouter.ai/keys</code>.
         </p>
 
-        <label class="field-label" for="model-select">Model</label>
+        <label class="field-label" for="model-select">Vision model (looks at the photo)</label>
         <div class="model-row">
           <select id="model-select" class="text-input"></select>
           <button id="model-reload" class="ghost-btn" type="button" title="Reload model list">
@@ -90,9 +90,14 @@
           </button>
         </div>
         <p id="model-status" class="muted small"></p>
+
+        <label class="field-label" for="reasoning-input">Reasoning model (final synthesis)</label>
+        <input id="reasoning-input" type="text" class="text-input" placeholder="deepseek/deepseek-r1:free" />
         <p class="muted small">
-          Limited to the two Gemma 4 vision models. The app interviews the chosen
-          model with a series of questions, then synthesises one specific answer.
+          A Gemma vision model answers questions about the photo; then this model
+          reasons over those answers to decide the final location.
+          <strong>DeepSeek-R1 is text-only</strong>, so it never sees the image —
+          it only reads the descriptions. You can put any OpenRouter model ID here.
         </p>
 
         <div class="modal-actions">

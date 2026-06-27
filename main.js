@@ -32,10 +32,14 @@ function writeSettings(next) {
   return merged;
 }
 
-// Default model. MUST be vision-capable, since this app sends photos. Free and
-// strong for geolocation. If it 404s (free IDs rotate), pick another vision model
-// in Settings (openrouter.ai/models, filter Free + Image input).
+// VISION model — looks at the photo and answers the observation questions.
+// Must be image-capable. Settings limits this to the two Gemma 4 vision models.
 const DEFAULT_MODEL = 'google/gemini-2.0-flash-exp:free';
+
+// REASONING model — does the final synthesis from the textual observations.
+// DeepSeek-R1 is text-only (no vision), so it never receives the image; it
+// reasons over the vision model's written answers. (huggingface.co/deepseek-ai/DeepSeek-R1)
+const DEFAULT_REASONING_MODEL = 'deepseek/deepseek-r1:free';
 
 const MEDIA_TYPES = {
   '.jpg': 'image/jpeg',
@@ -146,15 +150,19 @@ function settingsView(s) {
   return {
     hasApiKey: Boolean(s.apiKey),
     model: s.model || DEFAULT_MODEL,
+    reasoningModel: s.reasoningModel || DEFAULT_REASONING_MODEL,
   };
 }
 
 ipcMain.handle('settings:get', () => settingsView(readSettings()));
 
-ipcMain.handle('settings:save', (_evt, { apiKey, model }) => {
+ipcMain.handle('settings:save', (_evt, { apiKey, model, reasoningModel }) => {
   const next = {};
   if (typeof apiKey === 'string' && apiKey.trim()) next.apiKey = apiKey.trim();
   if (typeof model === 'string' && model.trim()) next.model = model.trim();
+  if (typeof reasoningModel === 'string' && reasoningModel.trim()) {
+    next.reasoningModel = reasoningModel.trim();
+  }
   return settingsView(writeSettings(next));
 });
 
@@ -264,7 +272,8 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     };
   }
 
-  const model = settings.model || DEFAULT_MODEL;
+  const model = settings.model || DEFAULT_MODEL; // vision model (sees the photo)
+  const reasoningModel = settings.reasoningModel || DEFAULT_REASONING_MODEL; // text-only synthesis
   const sender = evt.sender;
   const dataUrl = `data:${mediaType};base64,${data}`;
   const send = (channel, msg) => {
@@ -321,19 +330,32 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
       lastUsage = result.usage || lastUsage;
     }
 
-    // --- Final synthesis --------------------------------------------------
+    // --- Final synthesis (DeepSeek-R1, text-only) -------------------------
+    // R1 can't see images, so strip the photo and hand it a pure-text
+    // transcript of the vision model's answers to reason over.
     step += 1;
-    send('analyze:pass', { pass: step, total, label: 'Final location', final: true });
-    messages.push({ role: 'user', content: SYNTHESIS_PROMPT });
+    send('analyze:pass', { pass: step, total, label: 'Final reasoning', final: true, model: reasoningModel });
+
+    const synthMessages = [
+      ...toTextOnly(messages),
+      { role: 'user', content: SYNTHESIS_PROMPT },
+    ];
 
     const final = await callWithRetry({
       apiKey,
-      model,
-      messages,
-      maxTokens: 1600,
+      model: reasoningModel,
+      messages: synthMessages,
+      maxTokens: 2000,
       onDelta: (d) => send('analyze:delta', d),
       onRetry: (n) =>
-        send('analyze:pass', { pass: step, total, label: 'Final location', final: true, retry: n }),
+        send('analyze:pass', {
+          pass: step,
+          total,
+          label: 'Final reasoning',
+          final: true,
+          model: reasoningModel,
+          retry: n,
+        }),
     });
 
     if (!final.ok) return { ok: false, error: final.error };
@@ -341,7 +363,7 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
 
     return {
       ok: true,
-      model,
+      model: `${model} + ${reasoningModel}`,
       passesDone: step,
       usage: lastUsage
         ? { input_tokens: lastUsage.prompt_tokens, output_tokens: lastUsage.completion_tokens }
@@ -351,6 +373,21 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     return { ok: false, error: err.message || String(err) };
   }
 });
+
+// Convert a conversation to text-only: any array-valued (multimodal) content is
+// reduced to just its text parts, so a model without vision can consume it.
+function toTextOnly(messages) {
+  return messages.map((m) => {
+    if (Array.isArray(m.content)) {
+      const text = m.content
+        .filter((c) => c.type === 'text')
+        .map((c) => c.text)
+        .join('\n');
+      return { role: m.role, content: text };
+    }
+    return m;
+  });
+}
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
