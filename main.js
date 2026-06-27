@@ -62,16 +62,16 @@ const MEDIA_TYPES = {
   '.gif': 'image/gif',
 };
 
-// A vision model (GLM-4.5V) answers all the observation questions in ONE call;
-// then a reasoning model (GLM-5.2) synthesises a final location from the answers.
+// A 4-step pipeline: the vision model (GLM-4.5V) observes the photo(s) broadly,
+// then takes a closer "narrowing" look; the reasoning model (GLM-5.2) then makes
+// an initial deduction and finally commits to the most specific location.
 const INTERVIEW_SYSTEM =
-  'You are an expert geolocation analyst — a world-class GeoGuessr player combined with an OSINT investigator. ' +
+  'You are an expert geolocation analyst — a world-class GeoGuessr player combined with an OSINT investigator — examining one or more photographs of the SAME place. ' +
   'Reason concretely and specifically from the available evidence and your world knowledge. ' +
-  'Be willing to name specific countries, regions, cities, and districts. Note your uncertainty, but do not refuse to commit.';
+  'Be willing to name specific countries, regions, cities, districts, and streets. Note your uncertainty, but do not refuse to commit.';
 
-// One prompt that asks every observation question at once (keeps it to a single
-// API call instead of one per question — far gentler on free-tier rate limits).
-const OBSERVE_PROMPT = `Examine this photograph carefully and report every clue that could help locate where it was taken. Work through each of these:
+// Step 1 (vision): broad observation across all submitted photos.
+const OBSERVE_PROMPT = `You are shown one or more photographs of the SAME location. Examine ALL of them together and report every clue that could help locate where they were taken. Work through each of these:
 
 1. Text & language — read and transcribe any visible text (signs, shopfronts, posters, license plates, graffiti); identify the language, script, and what region it points to.
 2. Architecture & built environment — building styles, materials, roof shapes, window styles, and whether it looks urban, suburban, or rural.
@@ -80,7 +80,15 @@ const OBSERVE_PROMPT = `Examine this photograph carefully and report every clue 
 5. Vehicles, plates & brands — vehicle types, license-plate shape/colour/format, and any visible brand names or shop chains.
 6. Landmarks, sun & terrain — recognisable landmarks, mountains, coastlines, the sun's position/shadows, and any distinctive geographic features.
 
-Be concrete and specific, and name candidate countries/regions where you can. This step is observation only — describe what you see; do not give the final single answer yet.`;
+Note which photo each clue comes from if it matters, and call out anything consistent across photos. Be concrete and specific, and name candidate countries/regions where you can. This step is observation only — do not give the final single answer yet.`;
+
+// Step 2 (vision): a closer, targeted look to narrow the location down.
+const VISION_NARROW_PROMPT = `Now look again at the photo(s) even more closely, hunting specifically for details that NARROW the location down to a city, district, or exact street. Extract the highest-value specifics you can actually read or see:
+- Exact transcriptions of any text: street names, building/house numbers, shop and business names, phone numbers (and their country/area-code format), postal codes.
+- Distinctive logos, brand chains, transit liveries, or institutional signage.
+- License-plate region codes, stickers, or colours; bus/taxi markings.
+- Unique architectural, signage, or streetscape details that could be matched to a specific place.
+List the concrete specifics you find. If something is partially legible, give your best reading and say it's uncertain. Still do not give the final answer.`;
 
 const REPORT_FORMAT = `## Best guess
 The MOST SPECIFIC location the evidence honestly supports. Always give the country and region; push further to city, then neighbourhood/district, then a specific street, road, or landmark whenever the clues justify it. Be as precise as the evidence allows — but never invent specificity you can't defend.
@@ -105,8 +113,13 @@ GEO: <latitude>, <longitude>
 If you genuinely cannot estimate coordinates, output:
 GEO: none`;
 
-const SYNTHESIS_PROMPT =
-  'Based ONLY on the observations above, determine the most specific location this photo was taken, weighing the strongest clues most heavily and discarding weak ones. ' +
+// Step 3 (reasoning): initial deduction from the observations, with candidates.
+const DEDUCE_PROMPT =
+  'Reason step by step from these observations toward a location. Give your current best country → region → city, and list 2–4 candidate specific locations (district/street/landmark) with the concrete evidence for and against each. Do not finalise yet — this is your working deduction.';
+
+// Step 4 (reasoning): commit to the single most specific defensible location.
+const FINAL_PROMPT =
+  'Now narrow down and COMMIT. Choose the single most specific location the evidence honestly supports — push to neighbourhood/district, then a specific street, road, or landmark whenever the clues justify it — resolving between your candidates above. ' +
   'Respond in Markdown using EXACTLY this structure:\n\n' +
   REPORT_FORMAT;
 
@@ -173,16 +186,16 @@ ipcMain.handle('open:external', (_evt, url) => {
 });
 
 // ---------------------------------------------------------------------------
-// IPC: image picking — returns base64 data the renderer can preview and reuse
+// IPC: image picking — allows multiple files; returns an array of base64 images
 // ---------------------------------------------------------------------------
 ipcMain.handle('image:pick', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: 'Choose a photo to locate',
-    properties: ['openFile'],
+    title: 'Choose one or more photos of the same place',
+    properties: ['openFile', 'multiSelections'],
     filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif'] }],
   });
-  if (result.canceled || result.filePaths.length === 0) return null;
-  return loadImage(result.filePaths[0]);
+  if (result.canceled || result.filePaths.length === 0) return [];
+  return result.filePaths.map(loadImage);
 });
 
 function loadImage(filePath) {
@@ -197,13 +210,14 @@ function loadImage(filePath) {
 // IPC: analyze — streams the model's response back to the renderer via SSE
 // ---------------------------------------------------------------------------
 ipcMain.handle('analyze:start', async (evt, payload) => {
-  const { mediaType, data, note } = payload || {};
+  const { note } = payload || {};
+  const images = Array.isArray(payload && payload.images) ? payload.images : [];
   const settings = readSettings();
 
   if (!settings.apiKey) {
     return { ok: false, error: 'No token set. Open Settings and paste your Hugging Face token (hf_…).' };
   }
-  if (!data || !mediaType) {
+  if (images.length === 0 || images.some((im) => !im || !im.data || !im.mediaType)) {
     return { ok: false, error: 'No image provided.' };
   }
 
@@ -219,10 +233,9 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     };
   }
 
-  const model = cleanModelId(settings.model, DEFAULT_MODEL); // vision model (sees the photo)
-  const reasoningModel = cleanModelId(settings.reasoningModel, DEFAULT_REASONING_MODEL); // text-only synthesis
+  const model = cleanModelId(settings.model, DEFAULT_MODEL); // vision model (sees the photos)
+  const reasoningModel = cleanModelId(settings.reasoningModel, DEFAULT_REASONING_MODEL); // text-only
   const sender = evt.sender;
-  const dataUrl = `data:${mediaType};base64,${data}`;
   const send = (channel, msg) => {
     if (!sender.isDestroyed()) sender.send(channel, msg);
   };
@@ -230,59 +243,73 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
   const extra =
     note && note.trim() ? `\n\nKeep in mind this context from the user: ${note.trim()}` : '';
 
-  // Two calls total (keeps provider rate limits happy):
-  //   1) one vision call (GLM-4.5V) that asks ALL the observation questions
-  //   2) one reasoning call (GLM-5.2) over those observations (text-only)
-  const total = 2;
+  // Image content blocks (all submitted photos) for the vision turns.
+  const imageBlocks = images.map((im) => ({
+    type: 'image_url',
+    image_url: { url: `data:${im.mediaType};base64,${im.data}` },
+  }));
+  const photoWord = images.length === 1 ? 'photo' : `${images.length} photos`;
+
+  // Four steps: vision (observe) → vision (narrow) → reason (deduce) → reason (commit).
+  const total = 4;
   let lastUsage = null;
 
-  const onRetry = (label, model, info) =>
-    send('analyze:note', `${label}: rate-limited, waiting ${info.waitSec}s (retry ${info.attempt})…`);
+  const step = async (label, opts) => {
+    send('analyze:pass', { pass: opts.pass, total, label, model: opts.model, final: opts.final });
+    const r = await callWithRetry({
+      apiKey,
+      model: opts.model,
+      messages: opts.messages,
+      maxTokens: opts.maxTokens,
+      onDelta: (d) => send('analyze:delta', d),
+      onRetry: (info) =>
+        send('analyze:note', `${label}: rate-limited, waiting ${info.waitSec}s (retry ${info.attempt})…`),
+    });
+    if (r.ok) lastUsage = r.usage || lastUsage;
+    return r;
+  };
 
   try {
-    // --- 1) Vision observation (all questions in one prompt) -------------
-    send('analyze:pass', { pass: 1, total, label: 'Examining the photo', model });
-    const obs = await callWithRetry({
-      apiKey,
-      model,
-      messages: [
-        { role: 'system', content: INTERVIEW_SYSTEM },
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: OBSERVE_PROMPT + extra },
-            { type: 'image_url', image_url: { url: dataUrl } },
-          ],
-        },
-      ],
-      maxTokens: 1400,
-      onDelta: (d) => send('analyze:delta', d),
-      onRetry: (info) => onRetry('Examining the photo', model, info),
+    // --- 1) Vision: broad observation across all photos ------------------
+    const visionMessages = [
+      { role: 'system', content: INTERVIEW_SYSTEM },
+      { role: 'user', content: [{ type: 'text', text: OBSERVE_PROMPT + extra }, ...imageBlocks] },
+    ];
+    const obs1 = await step(`Examining the ${photoWord}`, {
+      pass: 1, model, messages: visionMessages, maxTokens: 1400,
     });
-    if (!obs.ok) return { ok: false, error: obs.error };
-    lastUsage = obs.usage || lastUsage;
+    if (!obs1.ok) return { ok: false, error: obs1.error };
+    visionMessages.push({ role: 'assistant', content: obs1.text });
 
-    // --- 2) Reasoning synthesis (GLM-5.2, text-only) ---------------------
-    send('analyze:pass', { pass: 2, total, label: 'Final reasoning', final: true, model: reasoningModel });
-    const synthUser =
-      'A vision analyst examined a photograph and reported these observations:\n\n' +
-      obs.text +
-      '\n\n' +
-      SYNTHESIS_PROMPT;
+    // --- 2) Vision: closer look to narrow down (re-includes the photos) --
+    visionMessages.push({ role: 'user', content: [{ type: 'text', text: VISION_NARROW_PROMPT }, ...imageBlocks] });
+    const obs2 = await step('Looking closer to narrow it down', {
+      pass: 2, model, messages: visionMessages, maxTokens: 1200,
+    });
+    if (!obs2.ok) return { ok: false, error: obs2.error };
 
-    const final = await callWithRetry({
-      apiKey,
-      model: reasoningModel,
-      messages: [
-        { role: 'system', content: INTERVIEW_SYSTEM },
-        { role: 'user', content: synthUser },
-      ],
-      maxTokens: 2000,
-      onDelta: (d) => send('analyze:delta', d),
-      onRetry: (info) => onRetry('Final reasoning', reasoningModel, info),
+    const observations = `${obs1.text}\n\nCloser look — narrowing details:\n${obs2.text}`;
+
+    // --- 3) Reasoning: initial deduction (text-only) ---------------------
+    const reasonMessages = [
+      { role: 'system', content: INTERVIEW_SYSTEM },
+      {
+        role: 'user',
+        content: `A vision analyst examined ${photoWord} of one location and reported:\n\n${observations}\n\n${DEDUCE_PROMPT}`,
+      },
+    ];
+    const deduce = await step('Reasoning about candidates', {
+      pass: 3, model: reasoningModel, messages: reasonMessages, maxTokens: 1400,
+    });
+    if (!deduce.ok) return { ok: false, error: deduce.error };
+    reasonMessages.push({ role: 'assistant', content: deduce.text });
+
+    // --- 4) Reasoning: commit to the most specific location --------------
+    reasonMessages.push({ role: 'user', content: FINAL_PROMPT });
+    const final = await step('Final location', {
+      pass: 4, model: reasoningModel, messages: reasonMessages, maxTokens: 2000, final: true,
     });
     if (!final.ok) return { ok: false, error: final.error };
-    lastUsage = final.usage || lastUsage;
 
     return {
       ok: true,

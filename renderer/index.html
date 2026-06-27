@@ -28,11 +28,11 @@
     <main class="layout">
       <section class="panel left">
         <div id="dropzone" class="dropzone">
-          <img id="preview" class="preview hidden" alt="Selected photo" />
+          <div id="thumbs" class="thumbs hidden"></div>
           <div id="dropzone-empty" class="dropzone-empty">
             <div class="dz-icon">🖼️</div>
-            <p><strong>Drop a photo here</strong></p>
-            <p class="muted">or click to choose · or paste from clipboard</p>
+            <p><strong>Drop photos here</strong></p>
+            <p class="muted">one or more of the same place · click to choose · paste to add</p>
           </div>
         </div>
 
@@ -45,7 +45,7 @@
         ></textarea>
 
         <div class="actions">
-          <button id="analyze-btn" class="primary-btn" disabled>Locate photo</button>
+          <button id="analyze-btn" class="primary-btn" disabled>Locate</button>
           <button id="clear-btn" class="ghost-btn" disabled>Clear</button>
         </div>
         <p id="left-status" class="left-status muted"></p>

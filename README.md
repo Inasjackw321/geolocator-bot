@@ -31,13 +31,17 @@ opens straight away. First launch, click **⚙ Settings**, paste your
 
 ## Features
 
-- **Drag & drop, paste, or browse** for a photo (JPEG, PNG, WebP, GIF)
-- **Vision + reasoning split (only 2 API calls)** — **GLM-4.5V** (vision) answers
-  all the observation questions in one call (text/language, architecture,
-  nature/climate, roads, vehicles & brands, landmarks/sun), then **GLM-5.2**
-  reasons over those answers in a second call to deduce one *specific* location.
-  (GLM-5.2 is text-only, so it reads the descriptions rather than the image.)
-- **Streamed analysis** — each step appears live, with a "Step X/Y" progress
+- **Multiple photos of the same place** — drag/drop, paste, or browse up to 8
+  images; the more angles and details you give it, the better it can narrow down.
+  Thumbnails show what's queued; click any **×** to remove one.
+- **4-stage narrowing pipeline** — **GLM-4.5V** (vision) first observes all the
+  photos broadly (text/language, architecture, nature/climate, roads, vehicles &
+  brands, landmarks/sun), then takes a **closer look** hunting for the specifics
+  that pin a city/district/street (exact signage, house numbers, plate codes,
+  chains). Then **GLM-5.2** (reasoning) makes an **initial deduction** with
+  candidates and finally **commits** to the single most specific location.
+  (GLM-5.2 is text-only, so it reasons over the descriptions, not the images.)
+- **Streamed analysis** — each step appears live, with a "Step X/4" progress
   indicator
 - **Result map** — drops a pin at the estimated coordinates (interactive
   OpenStreetMap, plus a one-click "Open in Google Maps" link)
@@ -94,13 +98,14 @@ renderer (UI)  ──IPC──▶  main process  ──HTTPS──▶  HF Infere
 - The **main process** holds the token and POSTs to the HF router (OpenAI-compatible
   Chat Completions), parsing the streamed SSE response and forwarding text deltas to
   the UI. No SDK — just native `fetch`, so the app has **no runtime dependencies**.
-- **Two-call flow:** call 1 — the **vision** model (`zai-org/GLM-4.5V`) gets one
-  prompt listing all six observation topics + the photo, and replies with a thorough
-  description. Call 2 — those observations (text only, no image) plus a report
-  instruction go to the **reasoning** model (`zai-org/GLM-5.2`), which produces the
-  final structured report + `GEO: <lat>, <lng>` line. The app parses that line and
-  drops a pin on a bundled **Leaflet + OpenStreetMap** map. Any `<think>` reasoning
-  is hidden from the displayed answer.
+- **Four-step flow:** (1) the **vision** model (`zai-org/GLM-4.5V`) gets all the
+  photos + the six observation topics and describes them; (2) it looks again,
+  prompted to extract the most location-specific details; (3) the **reasoning**
+  model (`zai-org/GLM-5.2`) deduces candidate locations from that text (no images);
+  (4) it commits to the single most specific spot and emits the final structured
+  report + `GEO: <lat>, <lng>` line. The app parses that line and drops a pin on a
+  bundled **Leaflet + OpenStreetMap** map. Any `<think>` reasoning is hidden from
+  the displayed answer.
 - **Rate-limit handling:** on a `429`/`5xx` the app honors the server's
   `Retry-After` header (or backs off 3→6→12→24→48s, up to 5 retries) and shows a
   "waiting Ns" status. If you keep getting limited, wait a minute or add credits at

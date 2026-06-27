@@ -3,7 +3,7 @@
 // --- DOM refs ---------------------------------------------------------------
 const dropzone = document.getElementById('dropzone');
 const dropzoneEmpty = document.getElementById('dropzone-empty');
-const preview = document.getElementById('preview');
+const thumbs = document.getElementById('thumbs');
 const note = document.getElementById('note');
 const analyzeBtn = document.getElementById('analyze-btn');
 const clearBtn = document.getElementById('clear-btn');
@@ -27,7 +27,8 @@ const mapLabel = document.getElementById('map-label');
 const mapLink = document.getElementById('map-link');
 
 // --- State ------------------------------------------------------------------
-let currentImage = null; // { mediaType, data, name }
+let images = []; // [{ mediaType, data, name }]
+const MAX_IMAGES = 8;
 let busy = false;
 
 // --- Map (Leaflet, bundled locally) -----------------------------------------
@@ -180,28 +181,50 @@ settingsSave.addEventListener('click', async () => {
 });
 
 // --- Image handling ---------------------------------------------------------
-function setImage(img) {
-  currentImage = img;
-  preview.src = `data:${img.mediaType};base64,${img.data}`;
-  preview.classList.remove('hidden');
-  dropzoneEmpty.classList.add('hidden');
-  leftStatus.textContent = img.name ? `Loaded: ${img.name}` : 'Image ready';
+function renderThumbs() {
+  thumbs.innerHTML = '';
+  for (let i = 0; i < images.length; i++) {
+    const img = images[i];
+    const cell = document.createElement('div');
+    cell.className = 'thumb';
+
+    const el = document.createElement('img');
+    el.src = `data:${img.mediaType};base64,${img.data}`;
+    el.alt = img.name || `photo ${i + 1}`;
+    cell.appendChild(el);
+
+    const rm = document.createElement('button');
+    rm.className = 'thumb-remove';
+    rm.type = 'button';
+    rm.textContent = '×';
+    rm.title = 'Remove';
+    rm.dataset.index = String(i);
+    cell.appendChild(rm);
+
+    thumbs.appendChild(cell);
+  }
+
+  const has = images.length > 0;
+  thumbs.classList.toggle('hidden', !has);
+  dropzoneEmpty.classList.toggle('hidden', has);
+  if (has) {
+    leftStatus.style.color = '';
+    leftStatus.textContent = `${images.length} photo${images.length === 1 ? '' : 's'} ready · click to add more`;
+  } else {
+    leftStatus.textContent = '';
+  }
   updateButtons();
 }
 
-function clearImage() {
-  currentImage = null;
-  preview.src = '';
-  preview.classList.add('hidden');
-  dropzoneEmpty.classList.remove('hidden');
-  leftStatus.textContent = '';
-  updateButtons();
+function clearImages() {
+  images = [];
+  renderThumbs();
 }
 
 function updateButtons() {
-  analyzeBtn.disabled = busy || !currentImage;
-  clearBtn.disabled = busy || !currentImage;
-  analyzeBtn.textContent = busy ? 'Analyzing…' : 'Locate photo';
+  analyzeBtn.disabled = busy || images.length === 0;
+  clearBtn.disabled = busy || images.length === 0;
+  analyzeBtn.textContent = busy ? 'Analyzing…' : 'Locate';
 }
 
 const SUPPORTED = {
@@ -227,23 +250,58 @@ function fileToImage(file) {
   });
 }
 
-async function handleFile(file) {
-  try {
-    setImage(await fileToImage(file));
-  } catch (err) {
-    leftStatus.textContent = err.message;
+// Add one or more images (from files or the native picker), respecting the cap.
+function addImages(newOnes) {
+  let added = 0;
+  let capped = false;
+  for (const img of newOnes) {
+    if (images.length >= MAX_IMAGES) {
+      capped = true;
+      break;
+    }
+    images.push(img);
+    added += 1;
+  }
+  renderThumbs();
+  if (capped) {
     leftStatus.style.color = 'var(--warn)';
+    leftStatus.textContent = `Added ${added}. Limit is ${MAX_IMAGES} photos.`;
   }
 }
 
-// Click to pick via native dialog
-dropzone.addEventListener('click', async () => {
+async function addFiles(fileList) {
+  const files = Array.from(fileList || []).filter((f) => f && f.type.startsWith('image/'));
+  if (files.length === 0) return;
+  const results = [];
+  for (const f of files) {
+    try {
+      results.push(await fileToImage(f));
+    } catch (err) {
+      leftStatus.style.color = 'var(--warn)';
+      leftStatus.textContent = err.message;
+    }
+  }
+  if (results.length) addImages(results);
+}
+
+// Click the dropzone to add via native dialog; click a thumbnail × to remove.
+dropzone.addEventListener('click', async (e) => {
   if (busy) return;
-  const img = await window.api.pickImage();
-  if (img) setImage(img);
+  const rm = e.target.closest('.thumb-remove');
+  if (rm) {
+    e.stopPropagation();
+    const idx = parseInt(rm.dataset.index, 10);
+    if (Number.isInteger(idx)) {
+      images.splice(idx, 1);
+      renderThumbs();
+    }
+    return;
+  }
+  const picked = await window.api.pickImage(); // array
+  if (Array.isArray(picked) && picked.length) addImages(picked);
 });
 
-// Drag & drop
+// Drag & drop (multiple)
 ['dragenter', 'dragover'].forEach((evt) =>
   dropzone.addEventListener(evt, (e) => {
     e.preventDefault();
@@ -257,26 +315,28 @@ dropzone.addEventListener('click', async () => {
   })
 );
 dropzone.addEventListener('drop', (e) => {
-  const file = e.dataTransfer.files && e.dataTransfer.files[0];
-  if (file) handleFile(file);
+  if (busy) return;
+  addFiles(e.dataTransfer.files);
 });
 
-// Paste from clipboard
+// Paste from clipboard (one or more images)
 window.addEventListener('paste', (e) => {
+  if (busy) return;
   const items = e.clipboardData && e.clipboardData.items;
   if (!items) return;
+  const files = [];
   for (const item of items) {
     if (item.type.startsWith('image/')) {
       const file = item.getAsFile();
-      if (file) handleFile(file);
-      break;
+      if (file) files.push(file);
     }
   }
+  if (files.length) addFiles(files);
 });
 
 clearBtn.addEventListener('click', () => {
   if (busy) return;
-  clearImage();
+  clearImages();
   resultEl.classList.add('hidden');
   resultEl.innerHTML = '';
   resultEmpty.classList.remove('hidden');
@@ -288,7 +348,7 @@ clearBtn.addEventListener('click', () => {
 analyzeBtn.addEventListener('click', runAnalysis);
 
 async function runAnalysis() {
-  if (!currentImage || busy) return;
+  if (images.length === 0 || busy) return;
 
   const settings = await window.api.getSettings();
   if (!settings.hasApiKey) {
@@ -350,8 +410,7 @@ async function runAnalysis() {
   });
 
   const res = await window.api.analyze({
-    mediaType: currentImage.mediaType,
-    data: currentImage.data,
+    images: images.map((im) => ({ mediaType: im.mediaType, data: im.data })),
     note: note.value,
   });
 
