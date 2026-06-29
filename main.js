@@ -99,7 +99,7 @@ const VISION_NARROW_PROMPT = `Now look again at the photo(s) even more closely, 
 - Unique architectural, signage, or streetscape details that could be matched to a specific place.
 List the concrete specifics you find. If something is partially legible, give your best reading and say it's uncertain. Still do not give the final answer.
 
-At the very end, output a line starting with "SEARCHES:" followed by up to 5 web-search queries (one per line) that would best help identify the exact place — e.g. a distinctive business name plus a guessed city, a street name + city, unusual sign text, or a landmark name. Make them specific and self-contained. If nothing is worth searching, write "SEARCHES: none".`;
+At the very end, output a line starting with "SEARCHES:" followed by up to 5 web-search queries (one per line) that would best help identify the exact place. PRIORITISE the names of businesses, shops, restaurants, hotels, or brands visible on signs — each combined with your best guess of the city, region, or country (e.g. "Joe's Pizza Lyon France", "Hotel Splendide Bordeaux"). Also include street name + city, and any landmark names. Make each query specific and self-contained (don't rely on the others). If nothing is worth searching, write "SEARCHES: none".`;
 
 const REPORT_FORMAT = `## Best guess
 The MOST SPECIFIC location the evidence honestly supports. Always give the country and region; push further to city, then neighbourhood/district, then a specific street, road, or landmark whenever the clues justify it. Be as precise as the evidence allows — but never invent specificity you can't defend.
@@ -572,7 +572,23 @@ async function fetchJsonSafe(url, headers) {
 }
 
 function stripHtml(s) {
-  return String(s || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+  return String(s || '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&#x27;|&#39;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/&amp;/gi, '&')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#(\d+);/g, (_, n) => {
+      try {
+        return String.fromCodePoint(parseInt(n, 10));
+      } catch {
+        return '';
+      }
+    })
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 // Pull the "SEARCHES:" query list the vision step is asked to emit.
@@ -610,20 +626,84 @@ async function wikiSearch(q) {
   return arr.map((s) => `${s.title}: ${stripHtml(s.snippet)}`);
 }
 
-async function ddgSearch(q) {
+async function ddgInstant(q) {
   const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(q)}&format=json&no_html=1&no_redirect=1&t=geolocatorbot`;
   const j = await fetchJsonSafe(url);
   if (!j) return [];
   const out = [];
   if (j.AbstractText) out.push(`${j.Heading ? j.Heading + ': ' : ''}${j.AbstractText}`);
-  for (const t of (Array.isArray(j.RelatedTopics) ? j.RelatedTopics : []).slice(0, 3)) {
+  for (const t of (Array.isArray(j.RelatedTopics) ? j.RelatedTopics : []).slice(0, 2)) {
     if (t && t.Text) out.push(t.Text);
   }
-  return out.slice(0, 3);
+  return out;
+}
+
+function shortHost(u) {
+  try {
+    return new URL(u).host.replace(/^www\./, '');
+  } catch {
+    return '';
+  }
+}
+
+// DuckDuckGo's no-JS HTML results give real organic hits (good for business
+// names), unlike the Instant Answer API. Best-effort: degrades to [] on failure.
+function decodeDdgHref(href) {
+  const m = href.match(/[?&]uddg=([^&]+)/);
+  if (m) {
+    try {
+      return decodeURIComponent(m[1]);
+    } catch {
+      /* fall through */
+    }
+  }
+  return href.startsWith('//') ? 'https:' + href : href;
+}
+
+async function ddgWebResults(q) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT_MS);
+  try {
+    const r = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', Accept: 'text/html' },
+      signal: ctrl.signal,
+    });
+    if (!r.ok) return [];
+    const html = await r.text();
+    const titles = [];
+    const snippets = [];
+    const linkRe = /class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+    const snipRe = /class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
+    let m;
+    while ((m = linkRe.exec(html)) && titles.length < 3) {
+      titles.push({ url: decodeDdgHref(m[1]), title: stripHtml(m[2]) });
+    }
+    while ((m = snipRe.exec(html)) && snippets.length < 3) {
+      snippets.push(stripHtml(m[1]));
+    }
+    const out = [];
+    for (let i = 0; i < titles.length; i++) {
+      const host = shortHost(titles[i].url);
+      const snip = snippets[i] ? ` — ${snippets[i]}` : '';
+      out.push(`${titles[i].title}${snip}${host ? ` [${host}]` : ''}`);
+    }
+    return out;
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Search one query across all providers; returns { query, places[], web[] }.
+// Real web results (ddgWebResults) come first — best for business names — then
+// Wikipedia, then DuckDuckGo instant answers.
 async function searchQuery(q) {
-  const [places, wiki, ddg] = await Promise.all([geocode(q), wikiSearch(q), ddgSearch(q)]);
-  return { query: q, places, web: [...ddg, ...wiki].slice(0, 4) };
+  const [places, web, wiki, ia] = await Promise.all([
+    geocode(q),
+    ddgWebResults(q),
+    wikiSearch(q),
+    ddgInstant(q),
+  ]);
+  return { query: q, places, web: [...web, ...wiki, ...ia].slice(0, 5) };
 }
