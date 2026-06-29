@@ -57,7 +57,7 @@ a local [Ollama](https://ollama.com) server instead of the cloud:
 
 1. Install Ollama and pull a **vision** model and a **reasoning** model, e.g.:
    ```bash
-   ollama pull llama3.2-vision
+   ollama pull qwen2.5vl
    ollama pull qwen2.5
    ```
    (Ollama serves automatically on `http://localhost:11434`.)

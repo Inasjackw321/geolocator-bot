@@ -190,7 +190,7 @@ presetHf.addEventListener('click', () => {
 presetOllama.addEventListener('click', () => {
   baseUrlInput.value = 'http://localhost:11434/v1';
   if (!modelInput.value || /\//.test(modelInput.value)) {
-    modelInput.value = 'llama3.2-vision';
+    modelInput.value = 'qwen2.5vl';
     reasoningInput.value = 'qwen2.5';
   }
 });
