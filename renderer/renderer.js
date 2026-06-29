@@ -21,6 +21,9 @@ const modelInput = document.getElementById('model-select');
 const settingsSave = document.getElementById('settings-save');
 const settingsCancel = document.getElementById('settings-cancel');
 const reasoningInput = document.getElementById('reasoning-input');
+const baseUrlInput = document.getElementById('base-url');
+const presetHf = document.getElementById('preset-hf');
+const presetOllama = document.getElementById('preset-ollama');
 
 const mapWrap = document.getElementById('map-wrap');
 const mapLabel = document.getElementById('map-label');
@@ -142,9 +145,12 @@ function shortModelName(id) {
 
 async function refreshSettingsBadge() {
   const s = await window.api.getSettings();
-  modelBadge.textContent = s.hasApiKey ? shortModelName(s.model) : 'no token';
-  modelBadge.title = s.model;
-  modelBadge.style.color = s.hasApiKey ? '' : 'var(--warn)';
+  // A configured endpoint is "ready" if it's local (no token needed) or has a token.
+  const ready = s.local || s.hasApiKey;
+  const label = s.local ? `${shortModelName(s.model)} · local` : shortModelName(s.model);
+  modelBadge.textContent = ready ? label : 'no token';
+  modelBadge.title = `${s.model}  @  ${s.baseUrl}`;
+  modelBadge.style.color = ready ? '' : 'var(--warn)';
   return s;
 }
 
@@ -153,7 +159,10 @@ async function openSettings() {
   apiKeyInput.value = '';
   apiKeyInput.placeholder = s.hasApiKey
     ? '•••••••• saved — leave blank to keep it'
-    : 'hf_...';
+    : s.local
+      ? '(not needed for local Ollama)'
+      : 'hf_...';
+  baseUrlInput.value = s.baseUrl || 'https://router.huggingface.co/v1';
   modelInput.value = s.model || 'zai-org/GLM-4.5V';
   reasoningInput.value = s.reasoningModel || 'zai-org/GLM-5.2';
   settingsModal.classList.remove('hidden');
@@ -170,9 +179,26 @@ settingsModal.addEventListener('click', (e) => {
   if (e.target === settingsModal) closeSettings();
 });
 
+// Preset buttons fill the endpoint + sensible model defaults for each provider.
+presetHf.addEventListener('click', () => {
+  baseUrlInput.value = 'https://router.huggingface.co/v1';
+  if (!modelInput.value || /localhost|llama|llava|qwen|gemma|minicpm/i.test(modelInput.value)) {
+    modelInput.value = 'zai-org/GLM-4.5V';
+    reasoningInput.value = 'zai-org/GLM-5.2';
+  }
+});
+presetOllama.addEventListener('click', () => {
+  baseUrlInput.value = 'http://localhost:11434/v1';
+  if (!modelInput.value || /\//.test(modelInput.value)) {
+    modelInput.value = 'llama3.2-vision';
+    reasoningInput.value = 'qwen2.5';
+  }
+});
+
 settingsSave.addEventListener('click', async () => {
   await window.api.saveSettings({
     apiKey: apiKeyInput.value, // blank is ignored by main; keeps existing key
+    baseUrl: baseUrlInput.value,
     model: modelInput.value,
     reasoningModel: reasoningInput.value,
   });
@@ -351,7 +377,7 @@ async function runAnalysis() {
   if (images.length === 0 || busy) return;
 
   const settings = await window.api.getSettings();
-  if (!settings.hasApiKey) {
+  if (!settings.hasApiKey && !settings.local) {
     openSettings();
     return;
   }
@@ -506,8 +532,8 @@ function renderMarkdown(md) {
 // --- Init -------------------------------------------------------------------
 (async function init() {
   const s = await refreshSettingsBadge();
-  if (!s.hasApiKey) {
+  if (!s.hasApiKey && !s.local) {
     leftStatus.style.color = 'var(--warn)';
-    leftStatus.textContent = 'Add your Hugging Face token in Settings to begin.';
+    leftStatus.textContent = 'Add a token (or point the endpoint at local Ollama) in Settings to begin.';
   }
 })();

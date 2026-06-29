@@ -5,12 +5,21 @@ const fs = require('fs');
 const path = require('path');
 
 // ---------------------------------------------------------------------------
-// This app talks to Hugging Face Inference Providers, whose router exposes an
-// OpenAI-compatible Chat Completions API. We call it with native fetch + SSE
-// streaming, so there is no SDK dependency. Auth uses a Hugging Face token
-// (hf_...) from https://huggingface.co/settings/tokens.
+// This app speaks the OpenAI-compatible Chat Completions API (native fetch +
+// SSE streaming, no SDK). The endpoint base URL is configurable:
+//   • Hugging Face Inference Providers (cloud): https://router.huggingface.co/v1
+//   • Ollama (local):                           http://localhost:11434/v1
+// Local endpoints need no token.
 // ---------------------------------------------------------------------------
-const ROUTER_URL = 'https://router.huggingface.co/v1/chat/completions';
+const DEFAULT_BASE_URL = 'https://router.huggingface.co/v1';
+
+function isLocalUrl(u) {
+  return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?(\/|$)/i.test(String(u || ''));
+}
+
+function chatEndpoint(baseUrl) {
+  return String(baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, '') + '/chat/completions';
+}
 
 // Local settings (API key + model), stored in the OS-standard userData dir.
 // Plaintext file readable by the local user — fine for a personal desktop
@@ -159,8 +168,11 @@ app.on('window-all-closed', () => {
 // IPC: settings
 // ---------------------------------------------------------------------------
 function settingsView(s) {
+  const baseUrl = s.baseUrl || DEFAULT_BASE_URL;
   return {
     hasApiKey: Boolean(s.apiKey),
+    baseUrl,
+    local: isLocalUrl(baseUrl),
     model: cleanModelId(s.model, DEFAULT_MODEL),
     reasoningModel: cleanModelId(s.reasoningModel, DEFAULT_REASONING_MODEL),
   };
@@ -168,9 +180,10 @@ function settingsView(s) {
 
 ipcMain.handle('settings:get', () => settingsView(readSettings()));
 
-ipcMain.handle('settings:save', (_evt, { apiKey, model, reasoningModel }) => {
+ipcMain.handle('settings:save', (_evt, { apiKey, baseUrl, model, reasoningModel }) => {
   const next = {};
   if (typeof apiKey === 'string' && apiKey.trim()) next.apiKey = apiKey.trim();
+  if (typeof baseUrl === 'string' && baseUrl.trim()) next.baseUrl = baseUrl.trim();
   if (typeof model === 'string' && model.trim()) next.model = model.trim();
   if (typeof reasoningModel === 'string' && reasoningModel.trim()) {
     next.reasoningModel = reasoningModel.trim();
@@ -214,8 +227,13 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
   const images = Array.isArray(payload && payload.images) ? payload.images : [];
   const settings = readSettings();
 
-  if (!settings.apiKey) {
-    return { ok: false, error: 'No token set. Open Settings and paste your Hugging Face token (hf_…).' };
+  const baseUrl = settings.baseUrl || DEFAULT_BASE_URL;
+  const local = isLocalUrl(baseUrl);
+  const endpoint = chatEndpoint(baseUrl);
+
+  // Local endpoints (Ollama) don't need a token; cloud ones do.
+  if (!settings.apiKey && !local) {
+    return { ok: false, error: 'No token set. Open Settings and paste your Hugging Face token (hf_…), or point the endpoint at a local Ollama server.' };
   }
   if (images.length === 0 || images.some((im) => !im || !im.data || !im.mediaType)) {
     return { ok: false, error: 'No image provided.' };
@@ -224,8 +242,8 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
   // HTTP header values must be printable ASCII. A common copy-paste mishap turns
   // a hyphen in the key into a dash (– or —), which makes fetch throw a cryptic
   // "ByteString" error. Catch it here with a clear, fixable message.
-  const apiKey = String(settings.apiKey).trim();
-  const bad = firstNonAsciiChar(apiKey);
+  const apiKey = settings.apiKey ? String(settings.apiKey).trim() : '';
+  const bad = apiKey ? firstNonAsciiChar(apiKey) : null;
   if (bad) {
     return {
       ok: false,
@@ -238,6 +256,14 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
   const sender = evt.sender;
   const send = (channel, msg) => {
     if (!sender.isDestroyed()) sender.send(channel, msg);
+  };
+
+  // When the local server is unreachable, point the user at the obvious fixes.
+  const enrich = (msg) => {
+    if (local && /fetch failed|econnrefused|network|failed to fetch|connect|socket/i.test(String(msg || ''))) {
+      return `Couldn't reach a local server at ${baseUrl}. Make sure Ollama is running and you've pulled the models — e.g. "ollama pull ${model}" and "ollama pull ${reasoningModel}". (${msg})`;
+    }
+    return msg;
   };
 
   const extra =
@@ -257,6 +283,7 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
   const step = async (label, opts) => {
     send('analyze:pass', { pass: opts.pass, total, label, model: opts.model, final: opts.final });
     const r = await callWithRetry({
+      url: endpoint,
       apiKey,
       model: opts.model,
       messages: opts.messages,
@@ -266,6 +293,7 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
         send('analyze:note', `${label}: rate-limited, waiting ${info.waitSec}s (retry ${info.attempt})…`),
     });
     if (r.ok) lastUsage = r.usage || lastUsage;
+    else r.error = enrich(r.error);
     return r;
   };
 
@@ -332,10 +360,10 @@ const MAX_RETRIES = 5;
 
 // One streamed model call, retried on rate-limit / transient server errors,
 // honoring the server's Retry-After when present.
-async function callWithRetry({ apiKey, model, messages, maxTokens, onDelta, onRetry }) {
+async function callWithRetry({ url, apiKey, model, messages, maxTokens, onDelta, onRetry }) {
   let result = null;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    result = await callModel({ apiKey, model, messages, maxTokens, onDelta });
+    result = await callModel({ url, apiKey, model, messages, maxTokens, onDelta });
     if (result.ok) return result;
     const transient = result.status === 429 || (result.status >= 500 && result.status < 600);
     if (transient && attempt < MAX_RETRIES) {
@@ -352,21 +380,23 @@ async function callWithRetry({ apiKey, model, messages, maxTokens, onDelta, onRe
 }
 
 // One streamed model call. Returns { ok, text, usage } or { ok:false, status, retryAfter, error }.
-async function callModel({ apiKey, model, messages, maxTokens, onDelta }) {
+async function callModel({ url, apiKey, model, messages, maxTokens, onDelta }) {
   const body = {
     model,
     stream: true,
     max_tokens: maxTokens || 1200,
     messages,
   };
-  const resp = await fetch(ROUTER_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
+  const headers = { 'Content-Type': 'application/json' };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`; // omitted for local (Ollama)
+
+  let resp;
+  try {
+    resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+  } catch (e) {
+    // Network/connection failure (e.g. local server not running). Not retryable.
+    return { ok: false, status: 0, retryAfter: null, error: e.message || 'Network error' };
+  }
   if (!resp.ok || !resp.body) {
     return {
       ok: false,
@@ -465,7 +495,7 @@ async function describeHttpError(resp) {
     case 403:
       return detail || 'Request blocked (403). Your token may lack Inference Providers permission, or the model is gated — accept its terms on its model page.';
     case 404:
-      return `Model not found, or not served by any Inference Provider (404). Check the model ID in Settings (e.g. zai-org/GLM-4.5V). ${detail}`.trim();
+      return `Model not found (404). For Ollama, pull it first (e.g. "ollama pull llama3.2-vision"); for Hugging Face, check the model ID is served by an Inference Provider. ${detail}`.trim();
     case 429:
       return (
         'Rate limited by Hugging Face Inference Providers even after several retries. ' +

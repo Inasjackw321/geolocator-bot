@@ -459,6 +459,18 @@ button:disabled {
   font-size: 15px;
 }
 
+.preset-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.preset-row .ghost-btn {
+  flex: 1;
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;

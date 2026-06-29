@@ -50,6 +50,24 @@ opens straight away. First launch, click **⚙ Settings**, paste your
 - Optional free-text context/question to steer the analysis
 - Token stored locally on your machine — the photo only goes to Hugging Face
 
+## Run it locally with Ollama (no token, free, private)
+
+Because the app speaks the OpenAI-compatible Chat Completions API, it can point at
+a local [Ollama](https://ollama.com) server instead of the cloud:
+
+1. Install Ollama and pull a **vision** model and a **reasoning** model, e.g.:
+   ```bash
+   ollama pull llama3.2-vision
+   ollama pull qwen2.5
+   ```
+   (Ollama serves automatically on `http://localhost:11434`.)
+2. In the app: **⚙ Settings** → click **Ollama (local)** → it fills the endpoint
+   (`http://localhost:11434/v1`) and local model names. Leave the token blank → Save.
+
+No API key, no rate limits, fully offline. **Caveat:** local models are smaller
+(7B–11B) than the cloud GLM models, so geolocation is less sharp, and a machine
+without a decent GPU will be slow (this app makes 4 calls per run).
+
 ## Requirements
 
 - [Node.js](https://nodejs.org/) 18+ (developed on Node 22)
