@@ -24,6 +24,7 @@ const reasoningInput = document.getElementById('reasoning-input');
 const baseUrlInput = document.getElementById('base-url');
 const presetHf = document.getElementById('preset-hf');
 const presetOllama = document.getElementById('preset-ollama');
+const webSearchInput = document.getElementById('web-search');
 
 const mapWrap = document.getElementById('map-wrap');
 const mapLabel = document.getElementById('map-label');
@@ -165,6 +166,7 @@ async function openSettings() {
   baseUrlInput.value = s.baseUrl || 'https://router.huggingface.co/v1';
   modelInput.value = s.model || 'zai-org/GLM-4.5V';
   reasoningInput.value = s.reasoningModel || 'zai-org/GLM-5.2';
+  webSearchInput.checked = s.webSearch !== false;
   settingsModal.classList.remove('hidden');
   apiKeyInput.focus();
 }
@@ -201,6 +203,7 @@ settingsSave.addEventListener('click', async () => {
     baseUrl: baseUrlInput.value,
     model: modelInput.value,
     reasoningModel: reasoningInput.value,
+    webSearch: webSearchInput.checked,
   });
   closeSettings();
   await refreshSettingsBadge();

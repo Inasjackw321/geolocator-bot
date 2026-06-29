@@ -41,7 +41,13 @@ opens straight away. First launch, click **⚙ Settings**, paste your
   chains). Then **GLM-5.2** (reasoning) makes an **initial deduction** with
   candidates and finally **commits** to the single most specific location.
   (GLM-5.2 is text-only, so it reasons over the descriptions, not the images.)
-- **Streamed analysis** — each step appears live, with a "Step X/4" progress
+- **Web search for clues** — the app looks up the signs, business names, streets
+  and landmarks the model reads, using **OpenStreetMap** (geocoding addresses to
+  coordinates), **Wikipedia**, and **DuckDuckGo** — all free, no API key. This
+  works even with local models (the app does the searching, then feeds the results
+  to the reasoning step). Toggle it off in Settings; only the extracted *text* is
+  searched, never your photos.
+- **Streamed analysis** — each step appears live, with a "Step X/5" progress
   indicator
 - **Result map** — drops a pin at the estimated coordinates (interactive
   OpenStreetMap, plus a one-click "Open in Google Maps" link)

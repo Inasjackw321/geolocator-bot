@@ -97,7 +97,9 @@ const VISION_NARROW_PROMPT = `Now look again at the photo(s) even more closely, 
 - Distinctive logos, brand chains, transit liveries, or institutional signage.
 - License-plate region codes, stickers, or colours; bus/taxi markings.
 - Unique architectural, signage, or streetscape details that could be matched to a specific place.
-List the concrete specifics you find. If something is partially legible, give your best reading and say it's uncertain. Still do not give the final answer.`;
+List the concrete specifics you find. If something is partially legible, give your best reading and say it's uncertain. Still do not give the final answer.
+
+At the very end, output a line starting with "SEARCHES:" followed by up to 5 web-search queries (one per line) that would best help identify the exact place — e.g. a distinctive business name plus a guessed city, a street name + city, unusual sign text, or a landmark name. Make them specific and self-contained. If nothing is worth searching, write "SEARCHES: none".`;
 
 const REPORT_FORMAT = `## Best guess
 The MOST SPECIFIC location the evidence honestly supports. Always give the country and region; push further to city, then neighbourhood/district, then a specific street, road, or landmark whenever the clues justify it. Be as precise as the evidence allows — but never invent specificity you can't defend.
@@ -175,12 +177,13 @@ function settingsView(s) {
     local: isLocalUrl(baseUrl),
     model: cleanModelId(s.model, DEFAULT_MODEL),
     reasoningModel: cleanModelId(s.reasoningModel, DEFAULT_REASONING_MODEL),
+    webSearch: s.webSearch !== false, // default on
   };
 }
 
 ipcMain.handle('settings:get', () => settingsView(readSettings()));
 
-ipcMain.handle('settings:save', (_evt, { apiKey, baseUrl, model, reasoningModel }) => {
+ipcMain.handle('settings:save', (_evt, { apiKey, baseUrl, model, reasoningModel, webSearch }) => {
   const next = {};
   if (typeof apiKey === 'string' && apiKey.trim()) next.apiKey = apiKey.trim();
   if (typeof baseUrl === 'string' && baseUrl.trim()) next.baseUrl = baseUrl.trim();
@@ -188,6 +191,7 @@ ipcMain.handle('settings:save', (_evt, { apiKey, baseUrl, model, reasoningModel 
   if (typeof reasoningModel === 'string' && reasoningModel.trim()) {
     next.reasoningModel = reasoningModel.trim();
   }
+  if (typeof webSearch === 'boolean') next.webSearch = webSearch;
   return settingsView(writeSettings(next));
 });
 
@@ -276,12 +280,15 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
   }));
   const photoWord = images.length === 1 ? 'photo' : `${images.length} photos`;
 
-  // Four steps: vision (observe) → vision (narrow) → reason (deduce) → reason (commit).
-  const total = 4;
+  // Pipeline: vision observe → vision narrow → [web search] → reason deduce →
+  // reason commit. The web-search step is skipped when disabled in Settings.
+  const webEnabled = settings.webSearch !== false;
+  const total = webEnabled ? 5 : 4;
+  let pass = 0;
   let lastUsage = null;
 
   const step = async (label, opts) => {
-    send('analyze:pass', { pass: opts.pass, total, label, model: opts.model, final: opts.final });
+    send('analyze:pass', { pass: ++pass, total, label, model: opts.model, final: opts.final });
     const r = await callWithRetry({
       url: endpoint,
       apiKey,
@@ -298,44 +305,79 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
   };
 
   try {
-    // --- 1) Vision: broad observation across all photos ------------------
+    // --- Vision: broad observation across all photos ---------------------
     const visionMessages = [
       { role: 'system', content: INTERVIEW_SYSTEM },
       { role: 'user', content: [{ type: 'text', text: OBSERVE_PROMPT + extra }, ...imageBlocks] },
     ];
     const obs1 = await step(`Examining the ${photoWord}`, {
-      pass: 1, model, messages: visionMessages, maxTokens: 1400,
+      model, messages: visionMessages, maxTokens: 1400,
     });
     if (!obs1.ok) return { ok: false, error: obs1.error };
     visionMessages.push({ role: 'assistant', content: obs1.text });
 
-    // --- 2) Vision: closer look to narrow down (re-includes the photos) --
+    // --- Vision: closer look to narrow down (re-includes the photos) -----
     visionMessages.push({ role: 'user', content: [{ type: 'text', text: VISION_NARROW_PROMPT }, ...imageBlocks] });
     const obs2 = await step('Looking closer to narrow it down', {
-      pass: 2, model, messages: visionMessages, maxTokens: 1200,
+      model, messages: visionMessages, maxTokens: 1200,
     });
     if (!obs2.ok) return { ok: false, error: obs2.error };
 
     const observations = `${obs1.text}\n\nCloser look — narrowing details:\n${obs2.text}`;
 
-    // --- 3) Reasoning: initial deduction (text-only) ---------------------
+    // --- Web search (app-side; local models can't browse) ----------------
+    let webContext = '';
+    if (webEnabled) {
+      send('analyze:pass', { pass: ++pass, total, label: 'Searching the web for clues' });
+      const queries = parseSearches(obs2.text);
+      if (queries.length === 0) {
+        send('analyze:delta', '_No specific search terms were found in the photos — skipping web search._');
+      } else {
+        const blocks = [];
+        for (const q of queries) {
+          send('analyze:delta', `**Searching:** ${q}\n`);
+          let r;
+          try {
+            r = await searchQuery(q);
+          } catch {
+            r = { query: q, places: [], web: [] };
+          }
+          let b = `Query: "${q}"\n`;
+          for (const pl of r.places) b += `- OpenStreetMap: ${pl.name} (${pl.lat.toFixed(4)}, ${pl.lng.toFixed(4)})\n`;
+          for (const w of r.web) b += `- ${w}\n`;
+          if (!r.places.length && !r.web.length) b += '- (no results)\n';
+          b += '\n';
+          send('analyze:delta', b);
+          blocks.push(b);
+          await sleep(400); // be polite to the free endpoints
+        }
+        webContext = blocks.join('');
+      }
+    }
+
+    // --- Reasoning: initial deduction (text-only) ------------------------
     const reasonMessages = [
       { role: 'system', content: INTERVIEW_SYSTEM },
       {
         role: 'user',
-        content: `A vision analyst examined ${photoWord} of one location and reported:\n\n${observations}\n\n${DEDUCE_PROMPT}`,
+        content:
+          `A vision analyst examined ${photoWord} of one location and reported:\n\n${observations}` +
+          (webContext
+            ? `\n\nWeb search results gathered from those clues (use them to verify and pin the location; ignore irrelevant hits):\n\n${webContext}`
+            : '') +
+          `\n\n${DEDUCE_PROMPT}`,
       },
     ];
     const deduce = await step('Reasoning about candidates', {
-      pass: 3, model: reasoningModel, messages: reasonMessages, maxTokens: 1400,
+      model: reasoningModel, messages: reasonMessages, maxTokens: 1400,
     });
     if (!deduce.ok) return { ok: false, error: deduce.error };
     reasonMessages.push({ role: 'assistant', content: deduce.text });
 
-    // --- 4) Reasoning: commit to the most specific location --------------
+    // --- Reasoning: commit to the most specific location -----------------
     reasonMessages.push({ role: 'user', content: FINAL_PROMPT });
     const final = await step('Final location', {
-      pass: 4, model: reasoningModel, messages: reasonMessages, maxTokens: 2000, final: true,
+      model: reasoningModel, messages: reasonMessages, maxTokens: 2000, final: true,
     });
     if (!final.ok) return { ok: false, error: final.error };
 
@@ -506,4 +548,82 @@ async function describeHttpError(resp) {
       if (resp.status >= 500) return `Inference provider error (${resp.status}). Try again shortly. ${detail}`.trim();
       return detail || `Request failed (${resp.status}).`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Web search — runs on the app's side (local models can't browse). All free,
+// no API key: OpenStreetMap Nominatim (geocoding), Wikipedia, DuckDuckGo.
+// ---------------------------------------------------------------------------
+const SEARCH_TIMEOUT_MS = 7000;
+const SEARCH_UA = 'GeolocatorBot/1.0 (personal desktop geolocation app)';
+
+async function fetchJsonSafe(url, headers) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT_MS);
+  try {
+    const r = await fetch(url, { headers: headers || {}, signal: ctrl.signal });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function stripHtml(s) {
+  return String(s || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+}
+
+// Pull the "SEARCHES:" query list the vision step is asked to emit.
+function parseSearches(text) {
+  const m = String(text || '').match(/^[ \t]*SEARCHES:[ \t]*(.*)$/im);
+  if (!m) return [];
+  const start = text.indexOf(m[0]);
+  const tail = text.slice(start + m[0].length);
+  const lines = (m[1] + '\n' + tail).split('\n');
+  const out = [];
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (/^none$/i.test(line)) break;
+    const q = line.replace(/^[-*\d.)\s]+/, '').replace(/^["']|["']$/g, '').trim();
+    if (q) out.push(q);
+    if (out.length >= 5) break;
+  }
+  return out;
+}
+
+async function geocode(q) {
+  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=2&q=${encodeURIComponent(q)}`;
+  const j = await fetchJsonSafe(url, { 'User-Agent': SEARCH_UA, 'Accept-Language': 'en' });
+  if (!Array.isArray(j)) return [];
+  return j
+    .map((p) => ({ name: p.display_name, lat: parseFloat(p.lat), lng: parseFloat(p.lon) }))
+    .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+}
+
+async function wikiSearch(q) {
+  const url = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(q)}&format=json&srlimit=2&origin=*`;
+  const j = await fetchJsonSafe(url);
+  const arr = (j && j.query && j.query.search) || [];
+  return arr.map((s) => `${s.title}: ${stripHtml(s.snippet)}`);
+}
+
+async function ddgSearch(q) {
+  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(q)}&format=json&no_html=1&no_redirect=1&t=geolocatorbot`;
+  const j = await fetchJsonSafe(url);
+  if (!j) return [];
+  const out = [];
+  if (j.AbstractText) out.push(`${j.Heading ? j.Heading + ': ' : ''}${j.AbstractText}`);
+  for (const t of (Array.isArray(j.RelatedTopics) ? j.RelatedTopics : []).slice(0, 3)) {
+    if (t && t.Text) out.push(t.Text);
+  }
+  return out.slice(0, 3);
+}
+
+// Search one query across all providers; returns { query, places[], web[] }.
+async function searchQuery(q) {
+  const [places, wiki, ddg] = await Promise.all([geocode(q), wikiSearch(q), ddgSearch(q)]);
+  return { query: q, places, web: [...ddg, ...wiki].slice(0, 4) };
 }

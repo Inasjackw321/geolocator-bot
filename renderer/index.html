@@ -110,6 +110,17 @@
           <code>ollama pull qwen2.5vl</code>).
         </p>
 
+        <label class="check-row">
+          <input id="web-search" type="checkbox" checked />
+          <span>Search the web for clues</span>
+        </label>
+        <p class="muted small">
+          When on, the app looks up the signs/names the model reads (street &amp;
+          business names, landmarks) using OpenStreetMap, Wikipedia &amp; DuckDuckGo
+          to help pin the spot. Those <em>text clues</em> are sent to those
+          services; your photos are not.
+        </p>
+
         <div class="modal-actions">
           <button id="settings-cancel" class="ghost-btn">Cancel</button>
           <button id="settings-save" class="primary-btn">Save</button>

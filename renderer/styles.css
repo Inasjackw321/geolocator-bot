@@ -459,6 +459,21 @@ button:disabled {
   font-size: 15px;
 }
 
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.check-row input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
 .preset-row {
   display: flex;
   gap: 8px;
