@@ -138,7 +138,8 @@ List your committed best guess FIRST, and make that first line as specific as th
 // Step 3 (reasoning): initial deduction from the observations, with candidates.
 const DEDUCE_PROMPT =
   'Reason step by step from these observations toward a location. Give your current best country → region → city, and list 2–4 candidate specific locations (district/street/landmark) with the concrete evidence for and against each. Do not finalise yet — this is your working deduction.\n\n' +
-  'Then, to raise your certainty, output up to 4 lines starting with "VERIFY:" — specific web-search queries (one per line) that would best CONFIRM or rule out your top candidates: the exact landmark, street or business combined with the city and country (e.g. "Pothonggang Park Pyongyang", "Rue Saint-Denis 12 Montréal"). The app will run these searches and give you the results before you commit, so choose queries whose answers would most change your confidence. If nothing is worth checking, write "VERIFY: none".';
+  'Then output one line "BESTSOFAR:" with your single most likely place written as a geocodable string (most specific first: landmark or street, suburb, city, region, country).\n\n' +
+  'Then output between 1 and 4 lines starting with "VERIFY:" — specific web-search queries (one per line) that would best CONFIRM or rule out your top candidates: the exact landmark, street or business combined with the city and country (e.g. "Pothonggang Park Pyongyang", "Rue Saint-Denis 12 Montréal"). You MUST provide at least one VERIFY query — never write "VERIFY: none". The app will run BESTSOFAR plus these searches and give you the results before you commit, so choose queries whose answers would most change your confidence.';
 
 // Step 4 (reasoning): commit to the single most specific defensible location.
 const FINAL_PROMPT =
@@ -550,11 +551,23 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     // --- Web search round 2: verify the deduced candidates --------------
     // A second, targeted search of the model's OWN top candidates — this is what
     // raises certainty: the commit step sees fresh confirmation (or contradiction)
-    // for the exact places it's considering, not just the original clue search.
+    // for the exact places it's considering. This round ALWAYS searches something:
+    // the model's best-so-far place plus its VERIFY queries, falling back to the
+    // strongest geocoded hit found so far if it somehow gave us neither.
     let verifyContext = '';
     if (webEnabled) {
       send('analyze:pass', { pass: ++pass, total, label: 'Verifying the location' });
-      verifyContext = await runSearchRound(parseVerify(deduce.text), send, geoHits);
+      const verifyQueries = [];
+      const bestSoFar = parseBestSoFar(deduce.text);
+      if (bestSoFar) verifyQueries.push(bestSoFar);
+      for (const q of parseVerify(deduce.text)) {
+        if (!verifyQueries.includes(q)) verifyQueries.push(q);
+      }
+      if (!verifyQueries.length && geoHits.length) {
+        const top = geoHits.slice().sort((a, b) => (b.rank || 0) - (a.rank || 0))[0];
+        if (top && top.name) verifyQueries.push(top.name);
+      }
+      verifyContext = await runSearchRound(verifyQueries.slice(0, 5), send, geoHits);
     }
 
     // --- Reasoning: commit to the most specific location -----------------
@@ -1051,6 +1064,15 @@ function parseSearches(text) {
 }
 function parseVerify(text) {
   return parseQueryList(text, 'VERIFY', 4);
+}
+
+// The reasoning step's single best-so-far place (a geocodable string we always
+// verify, so a search runs even if the model gives no VERIFY queries).
+function parseBestSoFar(text) {
+  const m = String(text || '').match(/^[ \t]*BESTSOFAR:[ \t]*(.+)$/im);
+  if (!m) return '';
+  const v = m[1].trim().replace(/^["']|["']$/g, '').trim();
+  return /^(none|n\/?a|unknown)\b/i.test(v) ? '' : v;
 }
 
 // Run a round of web searches, streaming each query + its results to the UI and
