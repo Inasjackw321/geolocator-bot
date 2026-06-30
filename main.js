@@ -130,7 +130,7 @@ const REPORT_FORMAT = `Use these exact section headings, and under each one writ
 Finally, after the report above, output a machine-readable list of map locations. Put the token "CANDIDATES:" on its own line — do NOT place it under a Markdown heading and do NOT wrap it in a code block — then one location per line in EXACTLY this pipe format, nothing else on those lines:
 CANDIDATES:
 <geocodable place: street or landmark, suburb, city, region, country> | <latitude>, <longitude> | <one short reason>
-List your committed best guess FIRST, and make that first line as specific as the report above (down to the street or landmark, not just the city), then up to 3 alternative locations worth showing on a map. If you truly cannot place it, output "CANDIDATES:" then a single line "none | 0, 0 | insufficient evidence".`;
+List your committed best guess FIRST, and make that first line as specific as the report above (down to the street or landmark, not just the city), then up to 3 alternative locations worth showing on a map. EVERY place line MUST be a full, geocodable address that ENDS WITH the city, region and country (e.g. "Bunnings Warehouse, Vermont South, Melbourne, Victoria, Australia") — never output just a store, building or landmark name on its own, since it has to be looked up on a map. If you truly cannot place it, output "CANDIDATES:" then a single line "none | 0, 0 | insufficient evidence".`;
 
 // Step 3 (reasoning): initial deduction from the observations, with candidates.
 const DEDUCE_PROMPT =
@@ -149,11 +149,11 @@ const FINAL_PROMPT =
 // in prose, and emit a fresh CANDIDATES block whenever the location changes.
 const FOLLOWUP_PROMPT =
   'The user is continuing the conversation to correct or refine the location. ' +
-  'Reply in one or two short sentences of plain prose (no Markdown headings). Use the prior evidence and your world knowledge. ' +
-  'IMPORTANT: if the user gives, corrects, or narrows the location in ANY way (for example names a city or country, says "it\'s in Melbourne", points out you picked the wrong place, or asks you to adjust/move/update the pins), you MUST end your reply with an updated machine-readable list that reflects the correction — even if you are only moderately confident. Trust what the user tells you about the location over your earlier guess. ' +
+  'ALWAYS begin your reply with one short sentence of plain prose (no Markdown headings) confirming what you did — e.g. "Updated — the best guess is now Vermont South." Use the prior evidence and your world knowledge. ' +
+  'IMPORTANT: if the user gives, corrects, or narrows the location in ANY way (for example names a city or suburb, says "it\'s in Melbourne", points out you picked the wrong place, or asks you to adjust/move/update the pins), you MUST then output an updated machine-readable list that reflects the correction — even if you are only moderately confident. Trust what the user tells you about the location over your earlier guess. ' +
   'Put the token "CANDIDATES:" on its own line (not under a heading, not in a code block), then one location per line as ' +
   '"<geocodable place: street or landmark, suburb, city, region, country> | <latitude>, <longitude> | <one short reason>", best guess first, up to 4. ' +
-  'Write the place strings to match what the user told you — use the corrected city/region/country so they geocode there (e.g. if the user says Melbourne, write "…, Melbourne, Victoria, Australia", NOT a same-named place in another country). ' +
+  'EVERY place line MUST be a full, geocodable address that ends with the city, region and country (e.g. "Bunnings Warehouse, Vermont South, Melbourne, Victoria, Australia") — never output just a store, building or landmark name on its own, and use the city/region/country the user told you (NOT a same-named place elsewhere). ' +
   'Only omit the CANDIDATES block if the user asked something that does not change the location at all.';
 
 // --- Session state (for follow-up chat + saved logs) -----------------------

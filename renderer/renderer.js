@@ -1231,8 +1231,24 @@ async function sendFollowup() {
     bubble.innerHTML = `<p class="chat-error">${escapeHtml(res.error || 'Something went wrong.')}</p>`;
     return;
   }
-  bubble.innerHTML = renderMarkdown(cleanForDisplay(res.text)) || '<p class="muted">(no reply)</p>';
-  if (res.candidates && res.candidates.length) showLocations(res.candidates);
+
+  const cleaned = cleanForDisplay(res.text || '').trim();
+  const cands = res.candidates && res.candidates.length ? res.candidates : null;
+  let html = cleaned ? renderMarkdown(cleaned) : '';
+  if (!html) {
+    // The model may reply with only a CANDIDATES block (stripped from display);
+    // confirm what changed instead of showing an empty bubble.
+    if (cands) {
+      const top = cands[0];
+      html = `<p>📍 Updated the map — best guess is now <strong>${escapeHtml(
+        top.label || top.place || 'the new location'
+      )}</strong>.</p>`;
+    } else {
+      html = '<p class="muted">No change to the location.</p>';
+    }
+  }
+  bubble.innerHTML = html;
+  if (cands) showLocations(cands);
   chatInput.focus();
 }
 
