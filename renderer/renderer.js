@@ -6,8 +6,17 @@ const dropzoneEmpty = document.getElementById('dropzone-empty');
 const thumbs = document.getElementById('thumbs');
 const note = document.getElementById('note');
 const analyzeBtn = document.getElementById('analyze-btn');
+const btnLabel = analyzeBtn.querySelector('.btn-label');
 const clearBtn = document.getElementById('clear-btn');
 const leftStatus = document.getElementById('left-status');
+const progressEl = document.getElementById('progress');
+const progressBar = document.getElementById('progress-bar');
+
+const editorModal = document.getElementById('editor-modal');
+const editorImg = document.getElementById('editor-img');
+const editorOverlay = document.getElementById('editor-overlay');
+const editorClear = document.getElementById('editor-clear');
+const editorDone = document.getElementById('editor-done');
 
 const resultEl = document.getElementById('result');
 const resultEmpty = document.getElementById('result-empty');
@@ -215,6 +224,8 @@ function renderThumbs() {
     const img = images[i];
     const cell = document.createElement('div');
     cell.className = 'thumb';
+    cell.dataset.index = String(i);
+    cell.title = 'Click to highlight clues';
 
     const el = document.createElement('img');
     el.src = `data:${img.mediaType};base64,${img.data}`;
@@ -226,19 +237,37 @@ function renderThumbs() {
     rm.type = 'button';
     rm.textContent = '×';
     rm.title = 'Remove';
-    rm.dataset.index = String(i);
+    rm.dataset.remove = String(i);
     cell.appendChild(rm);
 
+    const n = (img.highlights || []).length;
+    if (n) {
+      const badge = document.createElement('span');
+      badge.className = 'thumb-badge';
+      badge.textContent = `${n} ✦`;
+      cell.appendChild(badge);
+    }
+
     thumbs.appendChild(cell);
+  }
+
+  // "Add more" tile
+  if (images.length > 0 && images.length < MAX_IMAGES) {
+    const add = document.createElement('div');
+    add.className = 'thumb-add';
+    add.dataset.add = '1';
+    add.textContent = '+';
+    add.title = 'Add more photos';
+    thumbs.appendChild(add);
   }
 
   const has = images.length > 0;
   thumbs.classList.toggle('hidden', !has);
   dropzoneEmpty.classList.toggle('hidden', has);
-  if (has) {
+  if (has && !busy) {
     leftStatus.style.color = '';
-    leftStatus.textContent = `${images.length} photo${images.length === 1 ? '' : 's'} ready · click to add more`;
-  } else {
+    leftStatus.textContent = `${images.length} photo${images.length === 1 ? '' : 's'} · click one to highlight clues`;
+  } else if (!has) {
     leftStatus.textContent = '';
   }
   updateButtons();
@@ -250,9 +279,11 @@ function clearImages() {
 }
 
 function updateButtons() {
-  analyzeBtn.disabled = busy || images.length === 0;
-  clearBtn.disabled = busy || images.length === 0;
-  analyzeBtn.textContent = busy ? 'Analyzing…' : 'Locate';
+  const none = images.length === 0;
+  analyzeBtn.disabled = busy || none;
+  clearBtn.disabled = busy || none;
+  analyzeBtn.classList.toggle('loading', busy);
+  if (btnLabel) btnLabel.textContent = busy ? 'Analyzing…' : 'Locate';
 }
 
 const SUPPORTED = {
@@ -312,19 +343,30 @@ async function addFiles(fileList) {
   if (results.length) addImages(results);
 }
 
-// Click the dropzone to add via native dialog; click a thumbnail × to remove.
+// Routing: × removes · a thumbnail opens the highlight editor · the + tile or
+// empty space opens the file picker.
 dropzone.addEventListener('click', async (e) => {
   if (busy) return;
+
   const rm = e.target.closest('.thumb-remove');
   if (rm) {
     e.stopPropagation();
-    const idx = parseInt(rm.dataset.index, 10);
+    const idx = parseInt(rm.dataset.remove, 10);
     if (Number.isInteger(idx)) {
       images.splice(idx, 1);
       renderThumbs();
     }
     return;
   }
+
+  const thumb = e.target.closest('.thumb');
+  if (thumb) {
+    const idx = parseInt(thumb.dataset.index, 10);
+    if (Number.isInteger(idx)) openEditor(idx);
+    return;
+  }
+
+  // + tile or empty dropzone → add photos
   const picked = await window.api.pickImage(); // array
   if (Array.isArray(picked) && picked.length) addImages(picked);
 });
@@ -346,6 +388,170 @@ dropzone.addEventListener('drop', (e) => {
   if (busy) return;
   addFiles(e.dataTransfer.files);
 });
+
+// --- Highlight editor -------------------------------------------------------
+let editIndex = -1;
+let drawing = null;
+
+function clamp(v, lo, hi) {
+  return Math.min(hi, Math.max(lo, v));
+}
+
+function syncOverlay() {
+  // Make the overlay exactly cover the displayed image inside the stage.
+  editorOverlay.style.left = `${editorImg.offsetLeft}px`;
+  editorOverlay.style.top = `${editorImg.offsetTop}px`;
+  editorOverlay.style.width = `${editorImg.offsetWidth}px`;
+  editorOverlay.style.height = `${editorImg.offsetHeight}px`;
+}
+
+function renderBoxes() {
+  editorOverlay.innerHTML = '';
+  const hs = (images[editIndex] && images[editIndex].highlights) || [];
+  const W = editorOverlay.clientWidth;
+  const H = editorOverlay.clientHeight;
+  hs.forEach((h, i) => {
+    const box = document.createElement('div');
+    box.className = 'hl-box';
+    box.style.left = `${h.x * W}px`;
+    box.style.top = `${h.y * H}px`;
+    box.style.width = `${h.w * W}px`;
+    box.style.height = `${h.h * H}px`;
+    const del = document.createElement('button');
+    del.className = 'hl-del';
+    del.type = 'button';
+    del.textContent = '×';
+    del.addEventListener('mousedown', (e) => e.stopPropagation());
+    del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      hs.splice(i, 1);
+      renderBoxes();
+    });
+    box.appendChild(del);
+    editorOverlay.appendChild(box);
+  });
+}
+
+function openEditor(index) {
+  if (busy) return;
+  editIndex = index;
+  const img = images[index];
+  img.highlights = img.highlights || [];
+  editorImg.onload = () => {
+    syncOverlay();
+    renderBoxes();
+  };
+  editorImg.src = `data:${img.mediaType};base64,${img.data}`;
+  editorModal.classList.remove('hidden');
+  // If the image was cached and onload didn't fire, sync now.
+  if (editorImg.complete && editorImg.naturalWidth) {
+    syncOverlay();
+    renderBoxes();
+  }
+}
+
+function closeEditor() {
+  editorModal.classList.add('hidden');
+  editIndex = -1;
+  drawing = null;
+  renderThumbs(); // refresh highlight badges
+}
+
+editorOverlay.addEventListener('mousedown', (e) => {
+  if (editIndex < 0 || e.target.classList.contains('hl-del')) return;
+  const rect = editorOverlay.getBoundingClientRect();
+  const x = clamp(e.clientX - rect.left, 0, rect.width);
+  const y = clamp(e.clientY - rect.top, 0, rect.height);
+  const el = document.createElement('div');
+  el.className = 'hl-box';
+  el.style.left = `${x}px`;
+  el.style.top = `${y}px`;
+  editorOverlay.appendChild(el);
+  drawing = { x0: x, y0: y, el };
+});
+
+window.addEventListener('mousemove', (e) => {
+  if (!drawing) return;
+  const rect = editorOverlay.getBoundingClientRect();
+  const x = clamp(e.clientX - rect.left, 0, rect.width);
+  const y = clamp(e.clientY - rect.top, 0, rect.height);
+  drawing.el.style.left = `${Math.min(x, drawing.x0)}px`;
+  drawing.el.style.top = `${Math.min(y, drawing.y0)}px`;
+  drawing.el.style.width = `${Math.abs(x - drawing.x0)}px`;
+  drawing.el.style.height = `${Math.abs(y - drawing.y0)}px`;
+});
+
+window.addEventListener('mouseup', () => {
+  if (!drawing) return;
+  const W = editorOverlay.clientWidth;
+  const H = editorOverlay.clientHeight;
+  const left = parseFloat(drawing.el.style.left) || 0;
+  const top = parseFloat(drawing.el.style.top) || 0;
+  const w = parseFloat(drawing.el.style.width) || 0;
+  const h = parseFloat(drawing.el.style.height) || 0;
+  drawing = null;
+  if (w < 8 || h < 8) {
+    renderBoxes();
+    return;
+  }
+  const img = images[editIndex];
+  img.highlights = img.highlights || [];
+  img.highlights.push({ x: left / W, y: top / H, w: w / W, h: h / H });
+  renderBoxes();
+});
+
+editorClear.addEventListener('click', () => {
+  if (images[editIndex]) images[editIndex].highlights = [];
+  renderBoxes();
+});
+editorDone.addEventListener('click', closeEditor);
+editorModal.addEventListener('click', (e) => {
+  if (e.target === editorModal) closeEditor();
+});
+
+// Crop each highlighted region from the original image at full resolution
+// (scaled up a little for legibility) to send as extra close-up images.
+function loadImageEl(src) {
+  return new Promise((resolve, reject) => {
+    const im = new Image();
+    im.onload = () => resolve(im);
+    im.onerror = () => reject(new Error('image load failed'));
+    im.src = src;
+  });
+}
+
+async function buildHighlightCrops() {
+  const crops = [];
+  for (const image of images) {
+    const hs = image.highlights || [];
+    if (!hs.length) continue;
+    let im;
+    try {
+      im = await loadImageEl(`data:${image.mediaType};base64,${image.data}`);
+    } catch {
+      continue;
+    }
+    const NW = im.naturalWidth;
+    const NH = im.naturalHeight;
+    for (const h of hs) {
+      const sx = clamp(h.x * NW, 0, NW);
+      const sy = clamp(h.y * NH, 0, NH);
+      const sw = clamp(h.w * NW, 0, NW - sx);
+      const sh = clamp(h.h * NH, 0, NH - sy);
+      if (sw < 8 || sh < 8) continue;
+      const scale = clamp(700 / Math.max(sw, sh), 1, 3);
+      const cw = Math.round(sw * scale);
+      const ch = Math.round(sh * scale);
+      const canvas = document.createElement('canvas');
+      canvas.width = cw;
+      canvas.height = ch;
+      canvas.getContext('2d').drawImage(im, sx, sy, sw, sh, 0, 0, cw, ch);
+      const url = canvas.toDataURL('image/jpeg', 0.9);
+      crops.push({ mediaType: 'image/jpeg', data: url.split(',')[1] });
+    }
+  }
+  return crops;
+}
 
 // Paste from clipboard (one or more images)
 window.addEventListener('paste', (e) => {
@@ -369,6 +575,7 @@ clearBtn.addEventListener('click', () => {
   resultEl.innerHTML = '';
   resultEmpty.classList.remove('hidden');
   usageEl.classList.add('hidden');
+  progressEl.classList.add('hidden');
   hideMap();
 });
 
@@ -387,7 +594,7 @@ async function runAnalysis() {
   busy = true;
   updateButtons();
   leftStatus.style.color = '';
-  leftStatus.textContent = 'Starting…';
+  leftStatus.textContent = 'Preparing…';
 
   resultEmpty.classList.add('hidden');
   usageEl.classList.add('hidden');
@@ -395,6 +602,14 @@ async function runAnalysis() {
   resultEl.classList.remove('hidden');
   resultEl.classList.add('cursor');
   resultEl.innerHTML = '';
+
+  // Progress bar: start indeterminate until the first step reports pass/total.
+  progressEl.classList.remove('hidden');
+  progressEl.classList.add('indeterminate');
+  progressBar.style.width = '';
+
+  // Build high-res crops of any highlighted regions to send to the AI.
+  const highlights = await buildHighlightCrops();
 
   // `raw` accumulates the CURRENT question's answer. Each new question resets it.
   let raw = '';
@@ -421,11 +636,13 @@ async function runAnalysis() {
       leftStatus.textContent = `Question ${info.pass}/${info.total}: rate-limited, retry ${info.retry}…`;
       return;
     }
-    // A new question is beginning — reset the answer area.
+    // A new step is beginning — reset the answer area and advance the bar.
     raw = '';
     curLabel = info.label || '';
     curFinal = Boolean(info.final);
     resultEl.innerHTML = '';
+    progressEl.classList.remove('indeterminate');
+    if (info.total) progressBar.style.width = `${Math.round((info.pass / info.total) * 100)}%`;
     leftStatus.style.color = '';
     leftStatus.textContent = info.final
       ? `Step ${info.pass}/${info.total}: reasoning with ${shortModelName(info.model || '')}…`
@@ -447,6 +664,7 @@ async function runAnalysis() {
 
   const res = await window.api.analyze({
     images: images.map((im) => ({ mediaType: im.mediaType, data: im.data })),
+    highlights,
     note: note.value,
   });
 
@@ -457,6 +675,11 @@ async function runAnalysis() {
   resultEl.classList.remove('cursor');
   busy = false;
   updateButtons();
+
+  // Finish and fade out the progress bar.
+  progressEl.classList.remove('indeterminate');
+  progressBar.style.width = '100%';
+  setTimeout(() => progressEl.classList.add('hidden'), 600);
 
   if (!res.ok) {
     leftStatus.style.color = 'var(--warn)';

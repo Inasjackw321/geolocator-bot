@@ -45,9 +45,13 @@
         ></textarea>
 
         <div class="actions">
-          <button id="analyze-btn" class="primary-btn" disabled>Locate</button>
+          <button id="analyze-btn" class="primary-btn" disabled>
+            <span class="btn-spinner" aria-hidden="true"></span>
+            <span class="btn-label">Locate</span>
+          </button>
           <button id="clear-btn" class="ghost-btn" disabled>Clear</button>
         </div>
+        <div id="progress" class="progress hidden"><div id="progress-bar" class="progress-bar"></div></div>
         <p id="left-status" class="left-status muted"></p>
       </section>
 
@@ -124,6 +128,25 @@
         <div class="modal-actions">
           <button id="settings-cancel" class="ghost-btn">Cancel</button>
           <button id="settings-save" class="primary-btn">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Highlight editor modal -->
+    <div id="editor-modal" class="modal-backdrop hidden">
+      <div class="modal editor-modal">
+        <h2>Highlight clues for the AI</h2>
+        <p class="muted small">
+          Drag on the image to box areas the AI should focus on — signs, license
+          plates, shopfronts, landmarks. Each box is sent as a zoomed-in close-up.
+        </p>
+        <div id="editor-stage" class="editor-stage">
+          <img id="editor-img" alt="Photo being annotated" />
+          <div id="editor-overlay" class="editor-overlay"></div>
+        </div>
+        <div class="modal-actions">
+          <button id="editor-clear" class="ghost-btn" type="button">Clear boxes</button>
+          <button id="editor-done" class="primary-btn" type="button">Done</button>
         </div>
       </div>
     </div>

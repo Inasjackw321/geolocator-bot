@@ -270,15 +270,27 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     return msg;
   };
 
-  const extra =
-    note && note.trim() ? `\n\nKeep in mind this context from the user: ${note.trim()}` : '';
-
-  // Image content blocks (all submitted photos) for the vision turns.
-  const imageBlocks = images.map((im) => ({
+  const toBlock = (im) => ({
     type: 'image_url',
     image_url: { url: `data:${im.mediaType};base64,${im.data}` },
-  }));
+  });
+
+  // Main photos plus any user-highlighted close-up crops (sent after the photos).
+  const highlights = Array.isArray(payload && payload.highlights)
+    ? payload.highlights.filter((im) => im && im.data && im.mediaType)
+    : [];
+  const imageBlocks = images.map(toBlock);
+  const highlightBlocks = highlights.map(toBlock);
+  const allImageBlocks = [...imageBlocks, ...highlightBlocks];
   const photoWord = images.length === 1 ? 'photo' : `${images.length} photos`;
+
+  const highlightNote = highlights.length
+    ? `\n\nThe user has highlighted ${highlights.length} region(s) of interest, included as additional close-up image(s) AFTER the main ${photoWord}. Look at these especially closely — they likely contain the most identifying details (text on signs, license plates, logos, house numbers).`
+    : '';
+
+  const extra =
+    (note && note.trim() ? `\n\nKeep in mind this context from the user: ${note.trim()}` : '') +
+    highlightNote;
 
   // Pipeline: vision observe → vision narrow → [web search] → reason deduce →
   // reason commit. The web-search step is skipped when disabled in Settings.
@@ -308,7 +320,7 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     // --- Vision: broad observation across all photos ---------------------
     const visionMessages = [
       { role: 'system', content: INTERVIEW_SYSTEM },
-      { role: 'user', content: [{ type: 'text', text: OBSERVE_PROMPT + extra }, ...imageBlocks] },
+      { role: 'user', content: [{ type: 'text', text: OBSERVE_PROMPT + extra }, ...allImageBlocks] },
     ];
     const obs1 = await step(`Examining the ${photoWord}`, {
       model, messages: visionMessages, maxTokens: 1400,
@@ -317,7 +329,7 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     visionMessages.push({ role: 'assistant', content: obs1.text });
 
     // --- Vision: closer look to narrow down (re-includes the photos) -----
-    visionMessages.push({ role: 'user', content: [{ type: 'text', text: VISION_NARROW_PROMPT }, ...imageBlocks] });
+    visionMessages.push({ role: 'user', content: [{ type: 'text', text: VISION_NARROW_PROMPT }, ...allImageBlocks] });
     const obs2 = await step('Looking closer to narrow it down', {
       model, messages: visionMessages, maxTokens: 1200,
     });

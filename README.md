@@ -34,6 +34,12 @@ opens straight away. First launch, click **⚙ Settings**, paste your
 - **Multiple photos of the same place** — drag/drop, paste, or browse up to 8
   images; the more angles and details you give it, the better it can narrow down.
   Thumbnails show what's queued; click any **×** to remove one.
+- **Highlight clues** — click a photo to open the editor and drag boxes over signs,
+  license plates, shopfronts, or landmarks. Each box is cropped at full resolution
+  and sent to the AI as a zoomed-in close-up with a "look here" note, so it can read
+  small details it would otherwise miss.
+- **Animated, polished UI** — live progress bar across the steps, smooth reveals,
+  and a spinner while it works.
 - **4-stage narrowing pipeline** — **GLM-4.5V** (vision) first observes all the
   photos broadly (text/language, architecture, nature/climate, roads, vehicles &
   brands, landmarks/sun), then takes a **closer look** hunting for the specifics
