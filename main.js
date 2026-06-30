@@ -145,14 +145,16 @@ const FINAL_PROMPT =
   'Respond in Markdown using EXACTLY this structure:\n\n' +
   REPORT_FORMAT;
 
-// Follow-up chat: the user keeps talking to refine the location. Reply in prose;
-// only emit a fresh CANDIDATES block when the location actually changes.
+// Follow-up chat: the user keeps talking to correct/refine the location. Reply
+// in prose, and emit a fresh CANDIDATES block whenever the location changes.
 const FOLLOWUP_PROMPT =
-  'The user is continuing the conversation to pin down the location more precisely. ' +
-  'Reply directly and concisely in plain prose (no Markdown headings). Use the prior evidence and your world knowledge; if they gave a new clue, weigh it. ' +
-  'If — and only if — you can now refine the location, or your best guess / alternatives change, end your reply with an updated machine-readable list: put the token "CANDIDATES:" on its own line (not under a heading, not in a code block), then one location per line as ' +
+  'The user is continuing the conversation to correct or refine the location. ' +
+  'Reply in one or two short sentences of plain prose (no Markdown headings). Use the prior evidence and your world knowledge. ' +
+  'IMPORTANT: if the user gives, corrects, or narrows the location in ANY way (for example names a city or country, says "it\'s in Melbourne", points out you picked the wrong place, or asks you to adjust/move/update the pins), you MUST end your reply with an updated machine-readable list that reflects the correction — even if you are only moderately confident. Trust what the user tells you about the location over your earlier guess. ' +
+  'Put the token "CANDIDATES:" on its own line (not under a heading, not in a code block), then one location per line as ' +
   '"<geocodable place: street or landmark, suburb, city, region, country> | <latitude>, <longitude> | <one short reason>", best guess first, up to 4. ' +
-  'If the location has NOT changed, do not output a CANDIDATES block at all.';
+  'Write the place strings to match what the user told you — use the corrected city/region/country so they geocode there (e.g. if the user says Melbourne, write "…, Melbourne, Victoria, Australia", NOT a same-named place in another country). ' +
+  'Only omit the CANDIDATES block if the user asked something that does not change the location at all.';
 
 // --- Session state (for follow-up chat + saved logs) -----------------------
 let currentSession = null; // the active conversation, persisted to disk
@@ -836,9 +838,12 @@ function sleep(ms) {
 }
 
 // Does a geocoder's result name agree with the place string the model wrote?
-// Compares significant tokens (≥4 chars) — used to decide whether to trust a
-// geocode over the model's own (often hallucinated) coordinates. Lenient: a
-// couple of shared tokens (e.g. a city + country) is enough.
+// Used to decide whether to trust a geocode over the model's own (often
+// hallucinated) coordinates. We weight the TAIL of the place string — the last
+// couple of comma segments, i.e. the city/region/country — because that's what
+// actually determines the location. So a same-named business in another country
+// (e.g. "Forest Hill … Melbourne, Australia" geocoding to a Forest Hill in
+// Kitchener, Canada) is rejected even though the business-name tokens matched.
 function geoConsistent(placeStr, geoName) {
   const norm = (s) =>
     String(s || '')
@@ -849,11 +854,19 @@ function geoConsistent(placeStr, geoName) {
       .trim();
   const name = norm(geoName);
   if (!name) return false;
+  const segs = String(placeStr || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const tailTokens = [...new Set(norm(segs.slice(-2).join(' ')).split(' ').filter((t) => t.length >= 4))];
+  if (tailTokens.length) {
+    // The geocoded result must mention the city/region/country the model wrote.
+    return tailTokens.some((t) => name.includes(t));
+  }
+  // No city/country given — fall back to any significant shared token.
   const tokens = [...new Set(norm(placeStr).split(' ').filter((t) => t.length >= 4))];
-  if (!tokens.length) return true; // nothing specific to check — accept
-  let hits = 0;
-  for (const t of tokens) if (name.includes(t)) hits++;
-  return hits >= 2 || (tokens.length <= 2 && hits >= 1);
+  if (!tokens.length) return true;
+  return tokens.some((t) => name.includes(t));
 }
 
 // Great-circle distance in km (used to keep search-hit pins near the deduced area).
