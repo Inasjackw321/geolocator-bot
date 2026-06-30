@@ -67,13 +67,25 @@ function ensureMap() {
     worldCopyJump: true,
   });
   // CARTO dark basemap (free, no key) to match the app's dark theme; @2x tiles
-  // stay crisp on high-DPI screens. Falls back gracefully if a tile is missing.
-  L.tileLayer('https://{s}.basemap.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  // stay crisp on high-DPI screens. If it can't load (offline/blocked), fall
+  // back to standard OpenStreetMap tiles so the map always renders.
+  const carto = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
     maxZoom: 20,
     detectRetina: true,
     subdomains: 'abcd',
     attribution: '© OpenStreetMap contributors © CARTO',
-  }).addTo(map);
+  });
+  let swapped = false;
+  carto.on('tileerror', () => {
+    if (swapped) return;
+    swapped = true;
+    map.removeLayer(carto);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '© OpenStreetMap contributors',
+    }).addTo(map);
+  });
+  carto.addTo(map);
   return map;
 }
 
