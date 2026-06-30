@@ -26,6 +26,11 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('analyze:note', handler);
     return () => ipcRenderer.removeListener('analyze:note', handler);
   },
+  onSearch: (cb) => {
+    const handler = (_evt, info) => cb(info);
+    ipcRenderer.on('analyze:search', handler);
+    return () => ipcRenderer.removeListener('analyze:search', handler);
+  },
   onLocated: (cb) => {
     const handler = (_evt, loc) => cb(loc);
     ipcRenderer.on('analyze:located', handler);

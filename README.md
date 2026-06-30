@@ -55,21 +55,24 @@ opens straight away. First launch, click **⚙ Settings**, paste your
   searched, never your photos.
 - **Streamed analysis** — each step appears live, with a "Step X/5" progress
   indicator
-- **Multiple ranked pins with confidence** — the model emits up to **four ranked
-  candidate locations**, each with a 0–100 confidence score and a one-line reason.
-  The app drops a **colour-coded pin per candidate** (green = high, amber = medium,
-  red = low confidence), numbered by rank, with the best guess shown as a larger,
-  pulsing primary pin. The map **auto-fits to all the pins**, and a **confidence
-  meter list** beneath it animates in — click any row to fly the map to that pin
-  and open its popup. Every pin's coordinates are still **geocoded for accuracy**
-  (see below), not left at the model's guessed lat/long.
-- **Geocoded pins** — instead of trusting the model's guessed lat/long (often just
-  a city centroid), the app looks each candidate's address/place up with **two free
-  geocoders (OpenStreetMap Nominatim + Photon)**, ranks the matches by specificity
-  (house/street beats city), and pins the most precise one. The top pick is further
-  refined with the best business/landmark coordinate found during the web search —
-  but only if it's within ~150 km of the deduced area, so a same-named business in
-  another city won't hijack the pin. Interactive map + one-click "Open in Google Maps".
+- **Multiple ranked pins** — the model lists its **best guess first**, then up to
+  three alternative locations worth showing. The app drops a **numbered pin per
+  candidate**, with the best guess shown as a larger, pulsing primary pin (and the
+  alternatives dimmed). The map **auto-fits to all the pins**, and a clean
+  **candidate list** beneath it animates in — click any row to fly the map to that
+  pin and open its popup.
+- **Live activity timeline** — instead of dumping raw text, the analysis shows as a
+  tidy **step-by-step timeline** (spinner → ✓ for each stage), with each step's
+  output collapsible. Web searches appear as their own cards with the query and its
+  map/web hits, so you can watch exactly what it's looking up.
+- **Geocoded pins + a self-check when unsure** — instead of trusting the model's
+  guessed lat/long (often just a city centroid), the app looks each candidate's
+  place up with **two free geocoders (OpenStreetMap Nominatim + Photon)** and ranks
+  matches by specificity (house/street beats city). If the best guess only resolves
+  to a coarse level, it **searches the web again for that exact place** and refines
+  the pin if a more precise match for the *same* place turns up nearby — so the
+  pin lands on the street, not the city centre, without an unrelated business
+  hijacking it. Interactive map + one-click "Open in Google Maps".
 - Structured output: best guess, confidence, estimated coordinates, the clues used,
   alternative possibilities, and what would narrow it down
 - Optional free-text context/question to steer the analysis
@@ -146,11 +149,11 @@ renderer (UI)  ──IPC──▶  main process  ──HTTPS──▶  HF Infere
   prompted to extract the most location-specific details; (3) the **reasoning**
   model (`zai-org/GLM-5.2`) deduces candidate locations from that text (no images);
   (4) it commits to the most specific spot and emits the final structured report
-  plus a machine-readable `CANDIDATES:` block — up to four ranked locations, each
-  `confidence | place | lat, lng | reason`. The app parses that block, geocodes
-  each place, and drops a colour-coded, confidence-scored pin per candidate on a
-  bundled **Leaflet + OpenStreetMap** map. Any `<think>` reasoning and the raw
-  `CANDIDATES` lines are hidden from the displayed answer.
+  plus a machine-readable `CANDIDATES:` block — best guess first, then up to three
+  alternatives, each `place | lat, lng | reason`. The app parses that block,
+  geocodes each place, and drops a numbered pin per candidate on a bundled
+  **Leaflet + OpenStreetMap** map. Any `<think>` reasoning and the raw `CANDIDATES`
+  lines are hidden from the displayed answer.
 - **Rate-limit handling:** on a `429`/`5xx` the app honors the server's
   `Retry-After` header (or backs off 3→6→12→24→48s, up to 5 retries) and shows a
   "waiting Ns" status. If you keep getting limited, wait a minute or add credits at

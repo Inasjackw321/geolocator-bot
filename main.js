@@ -119,10 +119,10 @@ A bulleted list. For each clue, name what you saw and what it implies.
 ## What would narrow it down
 Briefly, what additional detail or angle would most increase your certainty.
 
-Finally, after everything above, output a machine-readable list of map candidates — your single best guess first, then up to 3 alternative locations you consider plausible. Use EXACTLY this header and one line per candidate in this pipe format (nothing else on those lines):
+Finally, after the report above, output a machine-readable list of map locations. Put the token "CANDIDATES:" on its own line — do NOT place it under a Markdown heading and do NOT wrap it in a code block — then one location per line in EXACTLY this pipe format, nothing else on those lines:
 CANDIDATES:
-<confidence 0-100> | <geocodable place: address or landmark, suburb, city, region, country> | <latitude>, <longitude> | <short reason>
-Give each a realistic confidence (they need not sum to 100). If you truly cannot place it, output "CANDIDATES:" then a single line "0 | none | 0, 0 | insufficient evidence".`;
+<geocodable place: street or landmark, suburb, city, region, country> | <latitude>, <longitude> | <one short reason>
+List your committed best guess FIRST, and make that first line as specific as the report above (down to the street or landmark, not just the city), then up to 3 alternative locations worth showing on a map. If you truly cannot place it, output "CANDIDATES:" then a single line "none | 0, 0 | insufficient evidence".`;
 
 // Step 3 (reasoning): initial deduction from the observations, with candidates.
 const DEDUCE_PROMPT =
@@ -344,26 +344,31 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
       send('analyze:pass', { pass: ++pass, total, label: 'Searching the web for clues' });
       const queries = parseSearches(obs2.text);
       if (queries.length === 0) {
-        send('analyze:delta', '_No specific search terms were found in the photos — skipping web search._');
+        send('analyze:search', { empty: true });
       } else {
         const blocks = [];
         for (const q of queries) {
-          send('analyze:delta', `**Searching:** ${q}\n`);
+          // Show the query immediately (spinner), then replace with its results.
+          send('analyze:search', { query: q, pending: true });
           let r;
           try {
             r = await searchQuery(q);
           } catch {
             r = { query: q, places: [], web: [] };
           }
+          for (const pl of r.places) geoHits.push({ ...pl, query: q });
+          send('analyze:search', {
+            query: q,
+            places: r.places.map((pl) => ({ name: pl.name, lat: pl.lat, lng: pl.lng })),
+            web: r.web,
+          });
           let b = `Query: "${q}"\n`;
           for (const pl of r.places) {
             b += `- Map match: ${pl.name} (${pl.lat.toFixed(4)}, ${pl.lng.toFixed(4)})\n`;
-            geoHits.push({ ...pl, query: q });
           }
           for (const w of r.web) b += `- ${w}\n`;
           if (!r.places.length && !r.web.length) b += '- (no results)\n';
           b += '\n';
-          send('analyze:delta', b);
           blocks.push(b);
           await sleep(600); // be polite to the free endpoints
         }
@@ -398,10 +403,11 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     if (!final.ok) return { ok: false, error: final.error };
 
     // --- Resolve map pins from the model's CANDIDATES block --------------
-    // The model emits up to 4 ranked candidates with confidence scores. We
-    // geocode each place for an accurate pin (the model's own lat/lng is often
-    // just a city centroid), keep its lat/lng as a fallback, and refine the top
-    // pick with the most specific nearby search hit. Emits an array of pins.
+    // The model lists its best guess first, then alternatives. We GEOCODE each
+    // place string for an accurate pin (the model's own lat/lng is often just a
+    // city centroid), keeping its lat/lng only as a fallback. We do NOT let an
+    // arbitrary web-search hit override a geocoded place — that used to hijack
+    // the pin (e.g. a CBD business stealing a suburb-level best guess).
     const parsed = parseCandidates(final.text);
     const candidates = [];
 
@@ -413,7 +419,7 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
       let source = 'model';
       let rank = 0;
       if (webEnabled && c.place) {
-        if (i === 0) send('analyze:note', `Looking up coordinates for: ${c.place}…`);
+        if (i === 0) send('analyze:note', `Pinpointing: ${c.place}…`);
         try {
           const hit = await geocodeBest(c.place);
           if (hit) {
@@ -428,12 +434,14 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
         }
       }
       if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+      // Dedup: skip a candidate that lands almost on top of one we already have
+      // (otherwise vague alternatives all collapse to the same city centroid).
+      if (candidates.some((p) => haversineKm(p, { lat, lng }) < 1.2)) continue;
       candidates.push({
         lat,
         lng,
         label,
         place: c.place,
-        confidence: c.confidence,
         reason: c.reason,
         source,
         rank,
@@ -441,26 +449,40 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
       });
     }
 
-    // Refine the primary pin: if a search hit is MORE specific than the geocoded
-    // place AND sits within ~150 km of it, prefer it. The distance gate avoids
-    // pinning a same-named business in a different city/country.
-    if (webEnabled && geoHits.length && candidates.length) {
+    // Verify the best guess when we're not confident it's precise: if the
+    // primary pin is only a coarse match (no street/house level), search the web
+    // for that exact place and refine the pin if a more precise hit for the SAME
+    // place turns up nearby. (We search the primary's own place string, so this
+    // sharpens the spot rather than swapping in an unrelated business.)
+    if (webEnabled && candidates.length) {
       const primary = candidates[0];
-      const sorted = geoHits.slice().sort((a, b) => (b.rank || 0) - (a.rank || 0));
-      for (const c of sorted) {
-        if ((c.rank || 0) > (primary.rank || 0) && haversineKm(c, primary) < 150) {
-          primary.lat = c.lat;
-          primary.lng = c.lng;
-          primary.label = c.name;
-          primary.source = 'osm';
-          primary.rank = c.rank || 0;
-          break;
+      const coarse = primary.source !== 'osm' || (primary.rank || 0) < 24; // < street level
+      if (coarse && primary.place) {
+        send('analyze:note', `Not fully sure — double-checking the exact spot for: ${primary.place}…`);
+        try {
+          const r = await searchQuery(primary.place);
+          const best = (r.places || []).slice().sort((a, b) => (b.rank || 0) - (a.rank || 0))[0];
+          if (best && (best.rank || 0) > (primary.rank || 0) && haversineKm(best, primary) < 40) {
+            primary.lat = best.lat;
+            primary.lng = best.lng;
+            primary.label = best.name;
+            primary.source = 'osm';
+            primary.rank = best.rank || 0;
+          }
+        } catch {
+          /* keep the unrefined pin */
         }
       }
     }
 
-    // Legacy fallback: if the model didn't emit a usable CANDIDATES block, fall
-    // back to the old PLACE/GEO single-pin resolution so we still drop a pin.
+    // Last-resort fallbacks so we still drop a pin if the CANDIDATES block was
+    // unusable: a strong geocoded search hit, then the legacy PLACE/GEO lines.
+    if (!candidates.length && webEnabled && geoHits.length) {
+      const best = geoHits.slice().sort((a, b) => (b.rank || 0) - (a.rank || 0))[0];
+      if (best) {
+        candidates.push({ lat: best.lat, lng: best.lng, label: best.name, place: best.name, reason: 'Best match found while searching the web', source: 'osm', rank: best.rank || 0, primary: true });
+      }
+    }
     if (!candidates.length) {
       const placeStr = parsePlace(final.text);
       const modelGeo = parseGeoLine(final.text);
@@ -488,7 +510,7 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
         lng = modelGeo.lng;
       }
       if (Number.isFinite(lat) && Number.isFinite(lng)) {
-        candidates.push({ lat, lng, label, place: placeStr, confidence: null, reason: '', source, rank, primary: true });
+        candidates.push({ lat, lng, label, place: placeStr, reason: '', source, rank, primary: true });
       }
     }
 
@@ -893,17 +915,6 @@ function parseGeoLine(text) {
   return null;
 }
 
-// Clamp a confidence token to an integer 0–100, or null if there's no number.
-function parseConfidence(s) {
-  const m = String(s || '').match(/-?\d+(?:\.\d+)?/);
-  if (!m) return null;
-  let n = parseFloat(m[0]);
-  if (!Number.isFinite(n)) return null;
-  if (n < 0) n = 0;
-  if (n > 100) n = 100;
-  return Math.round(n);
-}
-
 // Parse a "lat, lng" token into {lat,lng}, rejecting out-of-range or 0,0.
 function parseLatLng(s) {
   const m = String(s || '').match(/(-?\d{1,3}(?:\.\d+)?)[ \t]*,[ \t]*(-?\d{1,3}(?:\.\d+)?)/);
@@ -917,12 +928,15 @@ function parseLatLng(s) {
 }
 
 // Parse the "CANDIDATES:" block the final step emits — one location per line in
-// "<confidence 0-100> | <geocodable place> | <lat>, <lng> | <short reason>"
-// format. Best-first, up to 4, dropping the "none" placeholder. Returns
-// [{ confidence, place, lat, lng, reason }].
+// "<geocodable place> | <lat>, <lng> | <short reason>" format. Best-first, up to
+// 4, dropping the "none" placeholder and stray code-fence lines. Returns
+// [{ place, lat, lng, reason }].
 function parseCandidates(text) {
   const str = String(text || '');
-  const header = str.match(/^[ \t]*CANDIDATES:[ \t]*(.*)$/im);
+  // Anchor on the "CANDIDATES:" token, or fall back to a "machine-readable /
+  // map candidates" heading the model sometimes emits instead.
+  let header = str.match(/^[ \t]*CANDIDATES:[ \t]*(.*)$/im);
+  if (!header) header = str.match(/^[ \t]*#{0,6}[ \t]*(?:machine-readable[^\n]*|[^\n]*map candidates[^\n]*)$/im);
   if (!header) return [];
   const start = str.indexOf(header[0]) + header[0].length;
   // The header line may itself carry the first candidate (after "CANDIDATES:").
@@ -931,23 +945,22 @@ function parseCandidates(text) {
   for (const raw of body.split('\n')) {
     let line = raw.trim();
     if (!line) continue;
-    // Strip a leading bullet/number marker, but NOT the confidence number.
+    if (line.startsWith('```')) continue; // tolerate a stray code fence
+    // Strip a leading bullet/number marker.
     line = line.replace(/^(?:[-*•]|\d+[.)])\s+/, '');
     if (!line.includes('|')) {
       if (out.length) break; // left the block
       continue;
     }
     const parts = line.split('|').map((p) => p.trim());
-    if (parts.length < 2) continue;
-    const place = parts[1] || '';
+    const place = parts[0] || '';
     if (!place || /^none$/i.test(place)) continue;
-    const coords = parts[2] ? parseLatLng(parts[2]) : null;
+    const coords = parts[1] ? parseLatLng(parts[1]) : null;
     out.push({
-      confidence: parseConfidence(parts[0]),
       place,
       lat: coords ? coords.lat : null,
       lng: coords ? coords.lng : null,
-      reason: parts.slice(3).join(' | ').trim(),
+      reason: parts.slice(2).join(' | ').trim(),
     });
     if (out.length >= 4) break;
   }

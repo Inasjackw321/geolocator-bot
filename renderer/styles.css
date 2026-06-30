@@ -279,7 +279,7 @@ button:disabled {
 
 /* Result */
 .right {
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 .result-empty {
@@ -288,12 +288,10 @@ button:disabled {
 }
 
 .result {
-  overflow-y: auto;
   padding-right: 6px;
   line-height: 1.55;
   font-size: 14px;
-  flex: 1 1 auto;
-  min-height: 0;
+  flex: 0 1 auto;
 }
 
 .result h2 {
@@ -721,11 +719,11 @@ button:disabled {
 }
 
 /* =========================================================================
-   Map candidates — confidence-coloured pins, popups & meter list
+   Map pins, popups & candidate list
    ========================================================================= */
 
-/* Custom teardrop pins coloured by confidence. Override the generic marker drop
-   so each pin can stagger via its own inline animation-delay. */
+/* Custom numbered teardrop pins. Override the generic marker drop so each pin
+   can stagger via its own inline animation-delay. */
 .leaflet-marker-icon.geo-pin-wrap {
   animation: none;
   background: transparent;
@@ -736,11 +734,15 @@ button:disabled {
   width: 30px;
   height: 30px;
   border-radius: 50% 50% 50% 0;
-  background: var(--pin, var(--accent));
+  background: var(--accent-2);
   transform: rotate(-45deg);
   border: 2px solid rgba(255, 255, 255, 0.92);
   box-shadow: 0 3px 8px rgba(0, 0, 0, 0.45);
   animation: pinDrop 0.5s cubic-bezier(0.2, 0.8, 0.3, 1.2) both;
+}
+.geo-pin-alt {
+  background: #59628a;
+  opacity: 0.92;
 }
 .geo-pin-num {
   position: absolute;
@@ -749,7 +751,7 @@ button:disabled {
   align-items: center;
   justify-content: center;
   transform: rotate(45deg);
-  color: #0c0f1c;
+  color: #fff;
   font-size: 13px;
   font-weight: 800;
 }
@@ -757,10 +759,12 @@ button:disabled {
   width: 38px;
   height: 38px;
   border-width: 3px;
+  background: linear-gradient(135deg, var(--accent), var(--good));
   z-index: 5;
 }
 .geo-pin-primary .geo-pin-num {
   font-size: 15px;
+  color: #06122b;
 }
 /* A soft pulsing ring on the primary pin to draw the eye. */
 .geo-pin-primary::after {
@@ -775,22 +779,27 @@ button:disabled {
   animation: pinPulse 2s ease-out infinite;
 }
 @keyframes pinPulse {
-  0% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.5); }
-  70% { box-shadow: 0 0 0 14px rgba(255, 255, 255, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); }
+  0% { box-shadow: 0 0 0 0 rgba(90, 209, 154, 0.55); }
+  70% { box-shadow: 0 0 0 14px rgba(90, 209, 154, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(90, 209, 154, 0); }
 }
 
 /* Popups */
+.map-popup .popup-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--good);
+  margin-bottom: 3px;
+}
+.map-popup .popup-tag.alt {
+  color: var(--muted);
+}
 .map-popup .popup-title {
   font-weight: 700;
   font-size: 13px;
-  margin-bottom: 4px;
-}
-.map-popup .popup-conf {
-  display: inline-block;
-  font-size: 11px;
-  font-weight: 800;
-  color: var(--pin, var(--accent));
 }
 .map-popup .popup-reason {
   margin-top: 5px;
@@ -799,7 +808,7 @@ button:disabled {
   max-width: 230px;
 }
 
-/* Confidence list beneath the map */
+/* Candidate list beneath the map */
 .candidates {
   background: var(--panel);
   border-top: 1px solid var(--border);
@@ -807,7 +816,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 210px;
+  max-height: 200px;
   overflow-y: auto;
 }
 .candidates-head {
@@ -835,32 +844,36 @@ button:disabled {
 }
 .cand-row:hover {
   transform: translateY(-1px);
-  border-color: var(--pin, var(--accent));
+  border-color: var(--accent);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
 }
 .cand-row.primary {
-  border-color: var(--pin, var(--accent));
-  box-shadow: inset 0 0 0 1px var(--pin, var(--accent));
+  border-color: var(--good);
+  box-shadow: inset 0 0 0 1px rgba(90, 209, 154, 0.5);
 }
 .cand-dot {
   flex: 0 0 auto;
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: var(--pin, var(--accent));
-  color: #0c0f1c;
+  background: var(--accent-2);
+  color: #fff;
   font-size: 12px;
   font-weight: 800;
   display: flex;
   align-items: center;
   justify-content: center;
 }
+.cand-row.primary .cand-dot {
+  background: linear-gradient(135deg, var(--accent), var(--good));
+  color: #06122b;
+}
 .cand-body {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 .cand-label {
   font-size: 12.5px;
@@ -869,20 +882,6 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.cand-meter {
-  height: 6px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  overflow: hidden;
-}
-.cand-meter-fill {
-  display: block;
-  height: 100%;
-  width: 0;
-  border-radius: 999px;
-  background: var(--pin, var(--accent));
-  transition: width 0.7s cubic-bezier(0.4, 0, 0.2, 1);
-}
 .cand-reason {
   font-size: 11px;
   color: var(--muted);
@@ -890,11 +889,230 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.cand-conf {
+.cand-tag {
   flex: 0 0 auto;
+  color: var(--good);
+  font-size: 14px;
+}
+
+/* =========================================================================
+   Activity timeline ("Analysing")
+   ========================================================================= */
+.activity {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(34, 40, 66, 0.6), var(--panel));
+  overflow: hidden;
+  flex: 0 0 auto;
+  max-height: 46%;
+  display: flex;
+  flex-direction: column;
+  animation: fadeInUp 0.35s ease both;
+  margin-bottom: 12px;
+}
+.activity.done {
+  max-height: 200px;
+}
+.activity-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(20, 24, 42, 0.5);
+}
+.activity-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+.activity-title::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 0 rgba(110, 168, 254, 0.6);
+  animation: livePulse 1.6s ease-out infinite;
+  vertical-align: middle;
+}
+.activity.done .activity-title::before {
+  background: var(--good);
+  animation: none;
+}
+@keyframes livePulse {
+  0% { box-shadow: 0 0 0 0 rgba(110, 168, 254, 0.55); }
+  70% { box-shadow: 0 0 0 7px rgba(110, 168, 254, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(110, 168, 254, 0); }
+}
+.activity-status {
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60%;
+  transition: color 0.2s ease;
+}
+.activity-status.warn { color: var(--warn); }
+
+.activity-steps {
+  list-style: none;
+  margin: 0;
+  padding: 8px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.step {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  overflow: hidden;
+  animation: fadeInUp 0.28s ease both;
+}
+.step-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 11px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.step-icon {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 12px;
+  color: var(--good);
   font-weight: 800;
-  color: var(--pin, var(--accent));
-  min-width: 34px;
-  text-align: right;
+}
+.step-spinner {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid rgba(110, 168, 254, 0.3);
+  border-top-color: var(--accent);
+  animation: spin 0.7s linear infinite;
+}
+.step.done .step-icon { color: var(--good); }
+.step-title {
+  flex: 1 1 auto;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.step.running .step-title { color: var(--accent); }
+.step-sub {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+.step-sub:empty { display: none; }
+.step-chevron {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 13px;
+  transition: transform 0.2s ease;
+}
+.step.collapsed .step-chevron { transform: rotate(-90deg); }
+
+.step-body {
+  padding: 0 12px 11px 39px;
+  display: block;
+  overflow: hidden;
+}
+.step.collapsed .step-body { display: none; }
+.step-stream {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.step-note {
+  font-size: 11.5px;
+  color: var(--accent);
+  margin-top: 6px;
+  font-style: italic;
+}
+
+/* Web-search cards inside a step */
+.search-card {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: rgba(12, 15, 28, 0.5);
+  margin-top: 8px;
+  overflow: hidden;
+  animation: fadeInUp 0.25s ease both;
+}
+.search-q {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  border-bottom: 1px solid transparent;
+}
+.search-card.resolved .search-q { border-bottom-color: var(--border); }
+.search-ico { flex: 0 0 auto; }
+.search-spin {
+  flex: 0 0 auto;
+  margin-left: auto;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid rgba(110, 168, 254, 0.3);
+  border-top-color: var(--accent);
+  animation: spin 0.7s linear infinite;
+}
+.search-card.resolved .search-spin { display: none; }
+.search-results {
+  display: flex;
+  flex-direction: column;
+}
+.search-hit {
+  display: flex;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 11.5px;
+  color: var(--muted);
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+.search-hit .hit-ico { flex: 0 0 auto; }
+.search-hit.place { color: var(--text); }
+.search-hit .hit-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.search-none,
+.search-empty {
+  padding: 8px 10px;
+  font-size: 11.5px;
+  color: var(--muted);
+  font-style: italic;
 }

@@ -20,6 +20,9 @@ const editorDone = document.getElementById('editor-done');
 
 const resultEl = document.getElementById('result');
 const resultEmpty = document.getElementById('result-empty');
+const activityEl = document.getElementById('activity');
+const activityStepsEl = document.getElementById('activity-steps');
+const activityStatusEl = document.getElementById('activity-status');
 const usageEl = document.getElementById('usage');
 const modelBadge = document.getElementById('model-badge');
 
@@ -77,28 +80,12 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;');
 }
 
-// Confidence → colour & word. High = green, medium = amber, low = red.
-function confColor(c) {
-  if (c == null || !Number.isFinite(c)) return '#8b93a7';
-  if (c >= 67) return '#34d399';
-  if (c >= 34) return '#fbbf24';
-  return '#f87171';
-}
-
-function confLabel(c) {
-  if (c == null || !Number.isFinite(c)) return 'Unrated';
-  if (c >= 67) return 'High';
-  if (c >= 34) return 'Medium';
-  return 'Low';
-}
-
-// A teardrop pin coloured by confidence, numbered by rank. The primary guess
-// gets a larger, accented marker. Pins drop in with a staggered animation.
+// A numbered teardrop pin. The primary (best) guess gets a larger, accented
+// marker; alternatives are dimmer. Pins drop in with a staggered animation.
 function pinIcon(cand, idx) {
-  const color = confColor(cand.confidence);
-  const cls = 'geo-pin' + (cand.primary ? ' geo-pin-primary' : '');
+  const cls = 'geo-pin' + (cand.primary ? ' geo-pin-primary' : ' geo-pin-alt');
   const html =
-    `<div class="${cls}" style="--pin:${color}; animation-delay:${idx * 0.12}s">` +
+    `<div class="${cls}" style="animation-delay:${idx * 0.12}s">` +
     `<span class="geo-pin-num">${escapeHtml(String(idx + 1))}</span></div>`;
   return L.divIcon({
     className: 'geo-pin-wrap',
@@ -110,7 +97,7 @@ function pinIcon(cand, idx) {
 }
 
 // Drop one pin per candidate, fit the map to all of them, and render the
-// confidence list beneath. `candidates` is best-first; [0] is the primary.
+// candidate list beneath. `candidates` is best-first; [0] is the primary.
 function showLocations(candidates) {
   const cands = (candidates || []).filter(
     (c) => c && Number.isFinite(c.lat) && Number.isFinite(c.lng)
@@ -137,17 +124,12 @@ function showLocations(candidates) {
       zIndexOffset: cand.primary ? 1000 : 0,
     }).addTo(markerLayer);
 
-    const conf =
-      cand.confidence == null
-        ? ''
-        : `<span class="popup-conf" style="--pin:${confColor(cand.confidence)}">${confLabel(
-            cand.confidence
-          )} confidence · ${cand.confidence}%</span>`;
     const title = escapeHtml(cand.label || cand.place || `Candidate ${i + 1}`);
+    const tag = cand.primary
+      ? '<span class="popup-tag">★ Best guess</span>'
+      : `<span class="popup-tag alt">Alternative ${i + 1}</span>`;
     const reason = cand.reason ? `<div class="popup-reason">${escapeHtml(cand.reason)}</div>` : '';
-    mk.bindPopup(
-      `<div class="map-popup"><div class="popup-title">${cand.primary ? '★ ' : `${i + 1}. `}${title}</div>${conf}${reason}</div>`
-    );
+    mk.bindPopup(`<div class="map-popup">${tag}<div class="popup-title">${title}</div>${reason}</div>`);
 
     markerRefs.push(mk);
     pts.push([cand.lat, cand.lng]);
@@ -171,7 +153,7 @@ function showLocations(candidates) {
   renderCandidateList(cands);
 }
 
-// The confidence list under the map: a meter bar per candidate; click to fly.
+// The candidate list under the map: best guess first; click a row to fly to it.
 function renderCandidateList(cands) {
   if (!candidatesEl) return;
   candidatesEl.innerHTML = '';
@@ -183,37 +165,27 @@ function renderCandidateList(cands) {
 
   const head = document.createElement('div');
   head.className = 'candidates-head';
-  head.textContent = cands.length > 1 ? `${cands.length} possible locations` : 'Best guess';
+  head.textContent = cands.length > 1 ? `Best guess + ${cands.length - 1} alternatives` : 'Best guess';
   candidatesEl.appendChild(head);
 
   cands.forEach((cand, i) => {
-    const color = confColor(cand.confidence);
-    const pct = cand.confidence == null || !Number.isFinite(cand.confidence) ? 0 : cand.confidence;
     const row = document.createElement('button');
     row.type = 'button';
     row.className = 'cand-row' + (cand.primary ? ' primary' : '');
     row.style.animationDelay = `${i * 0.07}s`;
     row.innerHTML =
-      `<span class="cand-dot" style="--pin:${color}">${i + 1}</span>` +
+      `<span class="cand-dot">${i + 1}</span>` +
       `<span class="cand-body">` +
       `<span class="cand-label">${escapeHtml(cand.label || cand.place || `Candidate ${i + 1}`)}</span>` +
-      `<span class="cand-meter"><span class="cand-meter-fill" style="width:0%; --pin:${color}"></span></span>` +
       (cand.reason ? `<span class="cand-reason">${escapeHtml(cand.reason)}</span>` : '') +
       `</span>` +
-      `<span class="cand-conf" style="--pin:${color}">${
-        cand.confidence == null || !Number.isFinite(cand.confidence) ? '—' : cand.confidence + '%'
-      }</span>`;
+      (cand.primary ? '<span class="cand-tag">★</span>' : '');
     row.addEventListener('click', () => {
       flyToCandidate(cand);
       const mk = markerRefs[i];
       if (mk) mk.openPopup();
     });
     candidatesEl.appendChild(row);
-    // Animate the meter fill on the next frame.
-    const fill = row.querySelector('.cand-meter-fill');
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      fill.style.width = `${pct}%`;
-    }));
   });
 }
 
@@ -223,6 +195,129 @@ function flyToCandidate(cand) {
   const z = Math.max(map.getZoom() || 0, cand.source === 'osm' ? 14 : 6);
   if (typeof map.flyTo === 'function') map.flyTo([cand.lat, cand.lng], z, { duration: 0.6 });
   else map.setView([cand.lat, cand.lng], z);
+}
+
+// --- Activity timeline ------------------------------------------------------
+// A live "Analysing" panel: one row per pipeline step (spinner → check), each
+// with an expandable body that streams the step's text or its web-search cards.
+let currentStep = null; // the step element being filled right now
+
+function resetActivity() {
+  activityStepsEl.innerHTML = '';
+  currentStep = null;
+  activityStatusEl.textContent = '';
+  activityStatusEl.className = 'activity-status';
+  activityEl.classList.remove('hidden');
+  activityEl.classList.remove('done');
+}
+
+// Mark the active step finished, then start a new one. Returns the step element.
+function startStep(info) {
+  if (currentStep) finishStep(currentStep);
+
+  const li = document.createElement('li');
+  li.className = 'step running';
+  if (info.kind) li.dataset.kind = info.kind;
+
+  const head = document.createElement('button');
+  head.type = 'button';
+  head.className = 'step-head';
+  head.innerHTML =
+    '<span class="step-icon"><span class="step-spinner"></span></span>' +
+    `<span class="step-title">${escapeHtml(info.label || 'Working…')}</span>` +
+    (info.sub ? `<span class="step-sub">${escapeHtml(info.sub)}</span>` : '<span class="step-sub"></span>') +
+    '<span class="step-chevron">⌄</span>';
+
+  const body = document.createElement('div');
+  body.className = 'step-body';
+
+  head.addEventListener('click', () => li.classList.toggle('collapsed'));
+
+  li.appendChild(head);
+  li.appendChild(body);
+  activityStepsEl.appendChild(li);
+  activityEl.scrollTop = activityEl.scrollHeight;
+
+  currentStep = li;
+  currentStep._body = body;
+  return li;
+}
+
+function finishStep(li) {
+  if (!li) return;
+  li.classList.remove('running');
+  li.classList.add('done', 'collapsed');
+  const icon = li.querySelector('.step-icon');
+  if (icon) icon.innerHTML = '✓';
+}
+
+// Append streamed text to the current step's body (used for the model steps).
+function stepAppendText(text) {
+  if (!currentStep) return;
+  let pre = currentStep._body.querySelector('.step-stream');
+  if (!pre) {
+    pre = document.createElement('div');
+    pre.className = 'step-stream';
+    currentStep._body.appendChild(pre);
+  }
+  pre.textContent += text;
+  activityEl.scrollTop = activityEl.scrollHeight;
+}
+
+// Render a web-search result card into the current (search) step.
+function stepAddSearch(info) {
+  if (!currentStep) return;
+  const body = currentStep._body;
+
+  if (info.empty) {
+    const e = document.createElement('div');
+    e.className = 'search-empty';
+    e.textContent = 'No specific search terms were found in the photos — skipping web search.';
+    body.appendChild(e);
+    return;
+  }
+
+  // A "pending" event creates the card with a spinner; the result event fills it.
+  let card = body.querySelector(`[data-q="${cssEscape(info.query)}"]`);
+  if (!card) {
+    card = document.createElement('div');
+    card.className = 'search-card';
+    card.dataset.q = info.query;
+    card.innerHTML =
+      `<div class="search-q"><span class="search-ico">🔍</span><span>${escapeHtml(info.query)}</span>` +
+      '<span class="search-spin"></span></div><div class="search-results"></div>';
+    body.appendChild(card);
+    activityEl.scrollTop = activityEl.scrollHeight;
+  }
+  if (info.pending) return;
+
+  card.classList.add('resolved');
+  const results = card.querySelector('.search-results');
+  results.innerHTML = '';
+  const places = info.places || [];
+  const web = info.web || [];
+  if (!places.length && !web.length) {
+    results.innerHTML = '<div class="search-none">no results</div>';
+    return;
+  }
+  for (const pl of places) {
+    const row = document.createElement('div');
+    row.className = 'search-hit place';
+    row.innerHTML =
+      `<span class="hit-ico">📍</span><span class="hit-text">${escapeHtml(pl.name)}</span>`;
+    results.appendChild(row);
+  }
+  for (const w of web) {
+    const row = document.createElement('div');
+    row.className = 'search-hit web';
+    row.innerHTML = `<span class="hit-ico">🔗</span><span class="hit-text">${escapeHtml(w)}</span>`;
+    results.appendChild(row);
+  }
+}
+
+// Minimal CSS attribute-selector escaper for the query string.
+function cssEscape(s) {
+  return String(s).replace(/["\\]/g, '\\$&');
 }
 
 mapLink.addEventListener('click', (e) => {
@@ -260,13 +355,18 @@ function validatePair(lat, lng) {
   return null;
 }
 
-// Remove the machine-readable lines so they aren't shown: the legacy GEO/PLACE
-// lines and the CANDIDATES block (header + everything after it, since it's the
-// final output). Stripping mid-stream hides the raw pipe rows as they arrive.
+// Remove the machine-readable trailer so it isn't shown: an optional
+// "Machine-readable…/map candidates" heading, the CANDIDATES block, the legacy
+// GEO/PLACE lines, and any stray code fence around them. Everything from that
+// trailer to the end is the final output, so we cut to end-of-string. Stripping
+// mid-stream also hides the raw pipe rows as they arrive.
 function stripGeoLine(text) {
   return text
+    .replace(/^\s*#{0,6}\s*(machine-readable[^\n]*|map candidates)\s*$[\s\S]*$/im, '')
+    .replace(/^[ \t]*`{3,}\s*$\s*CANDIDATES:[\s\S]*$/im, '')
     .replace(/^[ \t]*CANDIDATES:[\s\S]*$/im, '')
     .replace(/^\s*(GEO|PLACE):.*$/gim, '')
+    .replace(/\n?\s*`{3,}\s*$/g, '')
     .trimEnd();
 }
 
@@ -718,6 +818,8 @@ clearBtn.addEventListener('click', () => {
   resultEl.classList.add('hidden');
   resultEl.innerHTML = '';
   resultEmpty.classList.remove('hidden');
+  activityEl.classList.add('hidden');
+  activityStepsEl.innerHTML = '';
   usageEl.classList.add('hidden');
   progressEl.classList.add('hidden');
   hideMap();
@@ -743,9 +845,12 @@ async function runAnalysis() {
   resultEmpty.classList.add('hidden');
   usageEl.classList.add('hidden');
   hideMap();
-  resultEl.classList.remove('hidden');
-  resultEl.classList.add('cursor');
+  // The structured report appears only once we reach the final step; until then
+  // the activity timeline carries the progress.
+  resultEl.classList.add('hidden');
+  resultEl.classList.remove('cursor');
   resultEl.innerHTML = '';
+  resetActivity();
 
   // Progress bar: start indeterminate until the first step reports pass/total.
   progressEl.classList.remove('hidden');
@@ -755,48 +860,66 @@ async function runAnalysis() {
   // Build high-res crops of any highlighted regions to send to the AI.
   const highlights = await buildHighlightCrops();
 
-  // `raw` accumulates the CURRENT question's answer. Each new question resets it.
+  // `raw` accumulates the CURRENT step's streamed text.
   let raw = '';
-  let curLabel = ''; // heading for the question being answered now
-  let curFinal = false; // is this the final synthesis step?
+  let curFinal = false; // are we streaming the final report now?
 
-  function render() {
-    const heading = curLabel && !curFinal ? `## ${curLabel}\n\n` : '';
+  function renderReport() {
     const body = cleanForDisplay(raw);
-    // During R1's silent "thinking" phase there may be no visible text yet.
-    const placeholder = curFinal && !body.trim() ? '_Reasoning…_' : '';
-    resultEl.innerHTML = renderMarkdown(heading + (body || placeholder));
+    // During the reasoning model's silent "thinking" phase there's no text yet.
+    const placeholder = !body.trim() ? '_Reasoning…_' : '';
+    resultEl.innerHTML = renderMarkdown(body || placeholder);
     resultEl.scrollTop = resultEl.scrollHeight;
   }
 
   const offDelta = window.api.onDelta((delta) => {
     raw += delta;
-    render();
+    if (curFinal) renderReport();
+    else stepAppendText(delta);
   });
 
   const offPass = window.api.onPass((info) => {
     if (info.retry) {
-      leftStatus.style.color = 'var(--warn)';
-      leftStatus.textContent = `Question ${info.pass}/${info.total}: rate-limited, retry ${info.retry}…`;
+      activityStatusEl.textContent = `rate-limited, retry ${info.retry}…`;
+      activityStatusEl.className = 'activity-status warn';
       return;
     }
-    // A new step is beginning — reset the answer area and advance the bar.
     raw = '';
-    curLabel = info.label || '';
     curFinal = Boolean(info.final);
-    resultEl.innerHTML = '';
-    progressEl.classList.remove('indeterminate');
-    if (info.total) progressBar.style.width = `${Math.round((info.pass / info.total) * 100)}%`;
-    leftStatus.style.color = '';
-    leftStatus.textContent = info.final
-      ? `Step ${info.pass}/${info.total}: reasoning with ${shortModelName(info.model || '')}…`
-      : `Step ${info.pass}/${info.total}: ${info.label}…`;
+    if (info.total) {
+      progressEl.classList.remove('indeterminate');
+      progressBar.style.width = `${Math.round((info.pass / info.total) * 100)}%`;
+    }
+    activityStatusEl.textContent = `Step ${info.pass} of ${info.total}`;
+    activityStatusEl.className = 'activity-status';
+
+    startStep({
+      label: info.label || (info.final ? 'Writing the report' : 'Working…'),
+      sub: info.model ? shortModelName(info.model) : '',
+      kind: info.final ? 'final' : /search/i.test(info.label || '') ? 'search' : 'model',
+    });
+
+    if (info.final) {
+      // Reveal the report area and stream the answer there, not into the log.
+      resultEl.classList.remove('hidden');
+      resultEl.classList.add('cursor');
+      resultEl.innerHTML = '';
+    }
   });
 
   const offNote = window.api.onNote((text) => {
-    leftStatus.style.color = '';
-    leftStatus.textContent = text;
+    activityStatusEl.textContent = text;
+    activityStatusEl.className = 'activity-status';
+    if (currentStep) {
+      const n = document.createElement('div');
+      n.className = 'step-note';
+      n.textContent = text;
+      currentStep._body.appendChild(n);
+      activityEl.scrollTop = activityEl.scrollHeight;
+    }
   });
+
+  const offSearch = window.api.onSearch((info) => stepAddSearch(info));
 
   // The main process resolves the pins (geocoded via OpenStreetMap when possible)
   // and sends them here as a candidates array. These authoritative coordinates
@@ -824,10 +947,16 @@ async function runAnalysis() {
   offDelta();
   offPass();
   offNote();
+  offSearch();
   offLocated();
+  finishStep(currentStep);
+  currentStep = null;
+  activityEl.classList.add('done');
   resultEl.classList.remove('cursor');
   busy = false;
   updateButtons();
+  leftStatus.style.color = '';
+  leftStatus.textContent = '';
 
   // Finish and fade out the progress bar.
   progressEl.classList.remove('indeterminate');
@@ -835,8 +964,8 @@ async function runAnalysis() {
   setTimeout(() => progressEl.classList.add('hidden'), 600);
 
   if (!res.ok) {
-    leftStatus.style.color = 'var(--warn)';
-    leftStatus.textContent = res.error;
+    activityStatusEl.textContent = res.error;
+    activityStatusEl.className = 'activity-status warn';
     if (!raw) {
       resultEl.classList.add('hidden');
       resultEmpty.classList.remove('hidden');
@@ -845,8 +974,8 @@ async function runAnalysis() {
   }
 
   // Final synthesis: render the structured answer and map it.
-  curFinal = true;
   const finalText = stripThink(raw);
+  resultEl.classList.remove('hidden');
   resultEl.innerHTML = renderMarkdown(cleanForDisplay(raw));
 
   // Prefer the candidates the main process resolved (geocoded via OpenStreetMap
@@ -861,22 +990,20 @@ async function runAnalysis() {
   if (cands.length) {
     showLocations(cands);
     const anyOsm = cands.some((c) => c.source === 'osm');
-    leftStatus.style.color = '';
-    leftStatus.textContent =
+    activityStatusEl.textContent =
       cands.length > 1
-        ? `Done — ${cands.length} candidate locations mapped.`
+        ? `Done — ${cands.length} locations mapped`
         : anyOsm
-          ? 'Done — pin placed via OpenStreetMap.'
-          : 'Done.';
+          ? 'Done — pin placed via OpenStreetMap'
+          : 'Done';
   } else {
     const coords = parseCoords(finalText);
     if (coords) {
       showLocations([{ lat: coords.lat, lng: coords.lng, label: bestGuessLine(finalText), primary: true }]);
-      leftStatus.style.color = '';
-      leftStatus.textContent = 'Done.';
+      activityStatusEl.textContent = 'Done';
     } else {
       hideMap();
-      leftStatus.textContent = 'Done — no mappable coordinates were returned.';
+      activityStatusEl.textContent = 'Done — no mappable coordinates were returned';
     }
   }
 
