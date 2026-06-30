@@ -1,5 +1,5 @@
 @echo off
-REM Double-click this on Windows to open Geolocator Bot.
+REM Double-click this on Windows to open Geolink.
 cd /d "%~dp0"
 
 where node >nul 2>nul
@@ -20,5 +20,5 @@ if not exist node_modules (
   )
 )
 
-echo Starting Geolocator Bot...
+echo Starting Geolink...
 call npm start

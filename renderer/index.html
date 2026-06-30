@@ -6,21 +6,22 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; img-src 'self' data: blob: https://*.tile.openstreetmap.org https://*.basemaps.cartocdn.com; style-src 'self' 'unsafe-inline'; script-src 'self';"
     />
-    <title>Geolocator Bot</title>
+    <title>Geolink</title>
     <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <header class="topbar">
       <div class="brand">
-        <span class="globe">🌍</span>
+        <span class="globe">🌐</span>
         <div>
-          <h1>Geolocator Bot</h1>
-          <p class="tagline">Drop in a photo — AI hunts for clues to where it was taken</p>
+          <h1>Geolink</h1>
+          <p class="tagline">Drop in a photo — AI links the clues to where it was taken</p>
         </div>
       </div>
       <div class="topbar-actions">
         <span id="model-badge" class="badge" title="Active model"></span>
+        <button id="history-btn" class="ghost-btn">🕑 History</button>
         <button id="settings-btn" class="ghost-btn">⚙ Settings</button>
       </div>
     </header>
@@ -80,6 +81,26 @@
           <div id="map"></div>
           <div id="candidates" class="candidates hidden"></div>
         </div>
+
+        <section id="chat" class="chat hidden">
+          <div class="chat-head">
+            <span class="chat-title">💬 Refine the location</span>
+            <span class="chat-hint muted">Ask a follow-up or add a clue to narrow it down</span>
+          </div>
+          <div id="chat-log" class="chat-log"></div>
+          <div class="chat-input-row">
+            <textarea
+              id="chat-input"
+              class="chat-input"
+              rows="1"
+              placeholder="e.g. 'It's near a river' or 'Can you narrow it to a street?'"
+            ></textarea>
+            <button id="chat-send" class="primary-btn" type="button">
+              <span class="btn-spinner" aria-hidden="true"></span>
+              <span class="btn-label">Send</span>
+            </button>
+          </div>
+        </section>
 
         <footer id="usage" class="usage muted hidden"></footer>
       </section>
@@ -157,6 +178,21 @@
         <div class="modal-actions">
           <button id="editor-clear" class="ghost-btn" type="button">Clear boxes</button>
           <button id="editor-done" class="primary-btn" type="button">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- History modal -->
+    <div id="history-modal" class="modal-backdrop hidden">
+      <div class="modal history-modal">
+        <h2>Saved chats</h2>
+        <p class="muted small">
+          Every analysis is saved here automatically. Open one to revisit the map and
+          conversation, or keep chatting to refine it further.
+        </p>
+        <div id="history-list" class="history-list"></div>
+        <div class="modal-actions">
+          <button id="history-close" class="ghost-btn">Close</button>
         </div>
       </div>
     </div>

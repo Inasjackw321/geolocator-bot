@@ -106,7 +106,7 @@ const VISION_NARROW_PROMPT = `Now look again at the photo(s) even more closely, 
 - Unique architectural, signage, or streetscape details that could be matched to a specific place.
 List the concrete specifics you find. If something is partially legible, give your best reading and say it's uncertain. Still do not give the final answer.
 
-If — and only if — a SINGLE specific piece of information from the user would substantially improve the location guess (something you genuinely cannot infer from the photos, e.g. "Is this your home area or somewhere you visited?" or "Roughly what year was this taken?"), output one line starting with "QUESTION:" containing that one short question for the user. Only ask when it would really help; otherwise output "QUESTION: none". Never ask more than one question.
+If — and only if — a SINGLE piece of information from the user would substantially improve the LOCATION guess (only ask about the location — e.g. "Is this your home area or somewhere you visited?", "Which country or region do you think this is in?", "Roughly what year was this taken?"), output one line starting with "QUESTION:" containing that one short question. Ask only about placing the photo, nothing else, and only when it would really help; otherwise output "QUESTION: none". Never ask more than one question.
 
 At the very end, output a line starting with "SEARCHES:" followed by up to 5 web-search queries (one per line) that would best help identify the exact place. PRIORITISE the names of businesses, shops, restaurants, hotels, or brands visible on signs — each combined with your best guess of the city, region, or country (e.g. "Joe's Pizza Lyon France", "Hotel Splendide Bordeaux"). Also include street name + city, and any landmark names. Make each query specific and self-contained (don't rely on the others). If nothing is worth searching, write "SEARCHES: none".`;
 
@@ -143,6 +143,127 @@ const FINAL_PROMPT =
   'Respond in Markdown using EXACTLY this structure:\n\n' +
   REPORT_FORMAT;
 
+// Follow-up chat: the user keeps talking to refine the location. Reply in prose;
+// only emit a fresh CANDIDATES block when the location actually changes.
+const FOLLOWUP_PROMPT =
+  'The user is continuing the conversation to pin down the location more precisely. ' +
+  'Reply directly and concisely in plain prose (no Markdown headings). Use the prior evidence and your world knowledge; if they gave a new clue, weigh it. ' +
+  'If — and only if — you can now refine the location, or your best guess / alternatives change, end your reply with an updated machine-readable list: put the token "CANDIDATES:" on its own line (not under a heading, not in a code block), then one location per line as ' +
+  '"<geocodable place: street or landmark, suburb, city, region, country> | <latitude>, <longitude> | <one short reason>", best guess first, up to 4. ' +
+  'If the location has NOT changed, do not output a CANDIDATES block at all.';
+
+// --- Session state (for follow-up chat + saved logs) -----------------------
+let currentSession = null; // the active conversation, persisted to disk
+
+function makeId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function sessionsDir() {
+  const d = path.join(app.getPath('userData'), 'sessions');
+  try {
+    fs.mkdirSync(d, { recursive: true });
+  } catch {
+    /* ignore */
+  }
+  return d;
+}
+
+function safeId(id) {
+  return String(id).replace(/[^a-z0-9]/gi, '');
+}
+
+function sessionFile(id) {
+  return path.join(sessionsDir(), `${safeId(id)}.json`);
+}
+
+function indexFile() {
+  return path.join(sessionsDir(), 'index.json');
+}
+
+function readIndex() {
+  try {
+    const arr = JSON.parse(fs.readFileSync(indexFile(), 'utf8'));
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeIndex(arr) {
+  try {
+    fs.writeFileSync(indexFile(), JSON.stringify(arr));
+  } catch {
+    /* non-fatal */
+  }
+}
+
+function indexEntry(s) {
+  return {
+    id: s.id,
+    title: s.title || 'Untitled location',
+    createdAt: s.createdAt || 0,
+    updatedAt: s.updatedAt || s.createdAt || 0,
+    turns: Array.isArray(s.chat) ? s.chat.length : 0,
+  };
+}
+
+function saveSession(s) {
+  if (!s || !s.id) return;
+  try {
+    s.updatedAt = Date.now();
+    fs.writeFileSync(sessionFile(s.id), JSON.stringify(s));
+    // Update the lightweight index (used by the History list).
+    const idx = readIndex().filter((e) => e.id !== s.id);
+    idx.unshift(indexEntry(s));
+    writeIndex(idx);
+  } catch {
+    /* non-fatal: history just won't persist */
+  }
+}
+
+// The History list reads ONLY the small index — never the full session files
+// (which hold the base64 images), so listing stays fast with many saved chats.
+function listSessions() {
+  let idx = readIndex();
+  // One-time rebuild if the index is missing but session files exist (e.g. from
+  // an older version), reading each file just this once.
+  if (!idx.length) {
+    let files = [];
+    try {
+      files = fs.readdirSync(sessionsDir()).filter((f) => f.endsWith('.json') && f !== 'index.json');
+    } catch {
+      return [];
+    }
+    for (const f of files) {
+      try {
+        idx.push(indexEntry(JSON.parse(fs.readFileSync(path.join(sessionsDir(), f), 'utf8'))));
+      } catch {
+        /* skip a corrupt file */
+      }
+    }
+    if (idx.length) writeIndex(idx);
+  }
+  return idx.slice().sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+function loadSessionFile(id) {
+  try {
+    return JSON.parse(fs.readFileSync(sessionFile(id), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function removeSession(id) {
+  try {
+    fs.unlinkSync(sessionFile(id));
+  } catch {
+    /* already gone */
+  }
+  writeIndex(readIndex().filter((e) => e.id !== id));
+}
+
 let mainWindow = null;
 
 function createWindow() {
@@ -152,7 +273,7 @@ function createWindow() {
     minWidth: 880,
     minHeight: 620,
     backgroundColor: '#0f1220',
-    title: 'Geolocator Bot',
+    title: 'Geolink',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -461,133 +582,36 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     if (!final.ok) return { ok: false, error: final.error };
 
     // --- Resolve map pins from the model's CANDIDATES block --------------
-    // The model lists its best guess first, then alternatives. We GEOCODE each
-    // place string for an accurate pin (the model's own lat/lng is often just a
-    // city centroid), keeping its lat/lng only as a fallback. We do NOT let an
-    // arbitrary web-search hit override a geocoded place — that used to hijack
-    // the pin (e.g. a CBD business stealing a suburb-level best guess).
-    const parsed = parseCandidates(final.text);
-    const candidates = [];
-
-    for (let i = 0; i < parsed.length; i++) {
-      const c = parsed[i];
-      let lat = c.lat;
-      let lng = c.lng;
-      let label = c.place;
-      let source = 'model';
-      let rank = 0;
-      if (webEnabled && c.place) {
-        if (i === 0) send('analyze:note', `Pinpointing: ${c.place}…`);
-        try {
-          const hit = await geocodeBest(c.place);
-          if (hit) {
-            // Trust the geocode only if it lands near the model's OWN estimate
-            // for this candidate. A vague place string ("Suburbia…") can match a
-            // same-named spot on the other side of the planet; the gate rejects
-            // those (e.g. a Canberra guess geocoding to Culiacán, Mexico).
-            const modelPt =
-              Number.isFinite(c.lat) && Number.isFinite(c.lng) ? { lat: c.lat, lng: c.lng } : null;
-            if (!modelPt || haversineKm(hit, modelPt) < GEOCODE_TRUST_KM) {
-              lat = hit.lat;
-              lng = hit.lng;
-              label = hit.name;
-              source = 'osm';
-              rank = hit.rank || 0;
-            }
-          }
-        } catch {
-          /* keep the model's own coordinates */
-        }
-      }
-      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-      // Drop an alternative that still ended up implausibly far from the best
-      // guess — alternatives for one photo shouldn't be on another continent.
-      if (candidates.length && haversineKm({ lat, lng }, candidates[0]) > ALT_MAX_KM) continue;
-      // Dedup: skip a candidate that lands almost on top of one we already have
-      // (otherwise vague alternatives all collapse to the same city centroid).
-      if (candidates.some((p) => haversineKm(p, { lat, lng }) < 1.2)) continue;
-      candidates.push({
-        lat,
-        lng,
-        label,
-        place: c.place,
-        reason: c.reason,
-        source,
-        rank,
-        primary: candidates.length === 0,
-      });
-    }
-
-    // Verify the best guess when we're not confident it's precise: if the
-    // primary pin is only a coarse match (no street/house level), search the web
-    // for that exact place and refine the pin if a more precise hit for the SAME
-    // place turns up nearby. (We search the primary's own place string, so this
-    // sharpens the spot rather than swapping in an unrelated business.)
-    if (webEnabled && candidates.length) {
-      const primary = candidates[0];
-      const coarse = primary.source !== 'osm' || (primary.rank || 0) < 24; // < street level
-      if (coarse && primary.place) {
-        send('analyze:note', `Not fully sure — double-checking the exact spot for: ${primary.place}…`);
-        try {
-          const r = await searchQuery(primary.place);
-          const best = (r.places || []).slice().sort((a, b) => (b.rank || 0) - (a.rank || 0))[0];
-          if (best && (best.rank || 0) > (primary.rank || 0) && haversineKm(best, primary) < 40) {
-            primary.lat = best.lat;
-            primary.lng = best.lng;
-            primary.label = best.name;
-            primary.source = 'osm';
-            primary.rank = best.rank || 0;
-          }
-        } catch {
-          /* keep the unrefined pin */
-        }
-      }
-    }
-
-    // Last-resort fallbacks so we still drop a pin if the CANDIDATES block was
-    // unusable: a strong geocoded search hit, then the legacy PLACE/GEO lines.
-    if (!candidates.length && webEnabled && geoHits.length) {
-      const best = geoHits.slice().sort((a, b) => (b.rank || 0) - (a.rank || 0))[0];
-      if (best) {
-        candidates.push({ lat: best.lat, lng: best.lng, label: best.name, place: best.name, reason: 'Best match found while searching the web', source: 'osm', rank: best.rank || 0, primary: true });
-      }
-    }
-    if (!candidates.length) {
-      const placeStr = parsePlace(final.text);
-      const modelGeo = parseGeoLine(final.text);
-      let lat;
-      let lng;
-      let label = placeStr || 'Model estimate';
-      let source = 'model';
-      let rank = 0;
-      if (webEnabled && placeStr) {
-        try {
-          const hit = await geocodeBest(placeStr);
-          if (hit) {
-            lat = hit.lat;
-            lng = hit.lng;
-            label = hit.name;
-            source = 'osm';
-            rank = hit.rank || 0;
-          }
-        } catch {
-          /* fall through */
-        }
-      }
-      if ((!Number.isFinite(lat) || !Number.isFinite(lng)) && modelGeo) {
-        lat = modelGeo.lat;
-        lng = modelGeo.lng;
-      }
-      if (Number.isFinite(lat) && Number.isFinite(lng)) {
-        candidates.push({ lat, lng, label, place: placeStr, reason: '', source, rank, primary: true });
-      }
-    }
-
+    const candidates = await resolveCandidates(final.text, {
+      webEnabled,
+      geoHits,
+      note: (m) => send('analyze:note', m),
+    });
     const located = candidates[0] || null;
     if (candidates.length) send('analyze:located', { candidates });
 
+    // --- Persist the session so follow-ups + history work ---------------
+    currentSession = {
+      id: makeId(),
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      title: (located && (located.place || located.label)) || 'Unknown location',
+      images,
+      note: note || '',
+      reportText: final.text,
+      candidates,
+      chat: [],
+      // Continuation context (text-only, so it stays small):
+      messages: reasonMessages.concat([{ role: 'assistant', content: final.text }]),
+      reasoningModel,
+      webEnabled,
+      photoWord,
+    };
+    saveSession(currentSession);
+
     return {
       ok: true,
+      sessionId: currentSession.id,
       model: `${model} + ${reasoningModel}`,
       passesDone: total,
       located,
@@ -599,6 +623,201 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }
+});
+
+// Turn a model's final/follow-up text into geocoded map pins. The model lists
+// its best guess first, then alternatives; we GEOCODE each place string for an
+// accurate pin (the model's own lat/lng is often a city centroid), keeping its
+// lat/lng only as a fallback, and never let an arbitrary web hit override a
+// geocoded place. `note` is an optional progress callback.
+async function resolveCandidates(finalText, { webEnabled, geoHits = [], note } = {}) {
+  const tell = typeof note === 'function' ? note : () => {};
+  const parsed = parseCandidates(finalText);
+  const candidates = [];
+
+  for (let i = 0; i < parsed.length; i++) {
+    const c = parsed[i];
+    let lat = c.lat;
+    let lng = c.lng;
+    let label = c.place;
+    let source = 'model';
+    let rank = 0;
+    if (webEnabled && c.place) {
+      if (i === 0) tell(`Pinpointing: ${c.place}…`);
+      try {
+        const hit = await geocodeBest(c.place);
+        if (hit) {
+          // Trust the geocode only if it lands near the model's OWN estimate for
+          // this candidate. A vague place string ("Suburbia…") can match a
+          // same-named spot on the other side of the planet; the gate rejects
+          // those (e.g. a Canberra guess geocoding to Culiacán, Mexico).
+          const modelPt =
+            Number.isFinite(c.lat) && Number.isFinite(c.lng) ? { lat: c.lat, lng: c.lng } : null;
+          if (!modelPt || haversineKm(hit, modelPt) < GEOCODE_TRUST_KM) {
+            lat = hit.lat;
+            lng = hit.lng;
+            label = hit.name;
+            source = 'osm';
+            rank = hit.rank || 0;
+          }
+        }
+      } catch {
+        /* keep the model's own coordinates */
+      }
+    }
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    // Drop an alternative that ended up implausibly far from the best guess.
+    if (candidates.length && haversineKm({ lat, lng }, candidates[0]) > ALT_MAX_KM) continue;
+    // Dedup near-identical pins.
+    if (candidates.some((p) => haversineKm(p, { lat, lng }) < 1.2)) continue;
+    candidates.push({ lat, lng, label, place: c.place, reason: c.reason, source, rank, primary: candidates.length === 0 });
+  }
+
+  // Verify the best guess when it's only a coarse match: search its own place
+  // string and refine the pin if a more precise hit for the SAME place is near.
+  if (webEnabled && candidates.length) {
+    const primary = candidates[0];
+    const coarse = primary.source !== 'osm' || (primary.rank || 0) < 24;
+    if (coarse && primary.place) {
+      tell(`Double-checking the exact spot for: ${primary.place}…`);
+      try {
+        const r = await searchQuery(primary.place);
+        const best = (r.places || []).slice().sort((a, b) => (b.rank || 0) - (a.rank || 0))[0];
+        if (best && (best.rank || 0) > (primary.rank || 0) && haversineKm(best, primary) < 40) {
+          primary.lat = best.lat;
+          primary.lng = best.lng;
+          primary.label = best.name;
+          primary.source = 'osm';
+          primary.rank = best.rank || 0;
+        }
+      } catch {
+        /* keep the unrefined pin */
+      }
+    }
+  }
+
+  // Last-resort fallbacks if the CANDIDATES block was unusable.
+  if (!candidates.length && webEnabled && geoHits.length) {
+    const best = geoHits.slice().sort((a, b) => (b.rank || 0) - (a.rank || 0))[0];
+    if (best) {
+      candidates.push({ lat: best.lat, lng: best.lng, label: best.name, place: best.name, reason: 'Best match found while searching the web', source: 'osm', rank: best.rank || 0, primary: true });
+    }
+  }
+  if (!candidates.length) {
+    const placeStr = parsePlace(finalText);
+    const modelGeo = parseGeoLine(finalText);
+    let lat;
+    let lng;
+    let label = placeStr || 'Model estimate';
+    let source = 'model';
+    let rank = 0;
+    if (webEnabled && placeStr) {
+      try {
+        const hit = await geocodeBest(placeStr);
+        if (hit) {
+          lat = hit.lat;
+          lng = hit.lng;
+          label = hit.name;
+          source = 'osm';
+          rank = hit.rank || 0;
+        }
+      } catch {
+        /* fall through */
+      }
+    }
+    if ((!Number.isFinite(lat) || !Number.isFinite(lng)) && modelGeo) {
+      lat = modelGeo.lat;
+      lng = modelGeo.lng;
+    }
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      candidates.push({ lat, lng, label, place: placeStr, reason: '', source, rank, primary: true });
+    }
+  }
+
+  return candidates;
+}
+
+// ---------------------------------------------------------------------------
+// IPC: follow-up chat — continue the conversation to refine the location
+// ---------------------------------------------------------------------------
+ipcMain.handle('chat:followup', async (evt, payload) => {
+  const message = payload && typeof payload.message === 'string' ? payload.message.trim() : '';
+  if (!currentSession) return { ok: false, error: 'Locate a photo first, then you can ask follow-up questions.' };
+  if (!message) return { ok: false, error: 'Type a message first.' };
+
+  const settings = readSettings();
+  const baseUrl = settings.baseUrl || DEFAULT_BASE_URL;
+  const local = isLocalUrl(baseUrl);
+  const endpoint = chatEndpoint(baseUrl);
+  const apiKey = settings.apiKey ? String(settings.apiKey).trim() : '';
+  if (!apiKey && !local) return { ok: false, error: 'No token set. Open Settings and paste your Hugging Face token, or use local Ollama.' };
+
+  const sender = evt.sender;
+  const send = (ch, msg) => {
+    if (!sender.isDestroyed()) sender.send(ch, msg);
+  };
+
+  const sess = currentSession;
+  sess.chat.push({ role: 'user', text: message });
+  sess.messages.push({ role: 'user', content: `${message}\n\n${FOLLOWUP_PROMPT}` });
+
+  const r = await callWithRetry({
+    url: endpoint,
+    apiKey,
+    model: sess.reasoningModel,
+    messages: sess.messages,
+    maxTokens: 1600,
+    onDelta: (d) => send('chat:delta', d),
+    onRetry: (info) => send('chat:note', `Rate-limited, waiting ${info.waitSec}s (retry ${info.attempt})…`),
+  });
+  if (!r.ok) {
+    // Roll back the unanswered turn so the user can retry cleanly.
+    sess.messages.pop();
+    sess.chat.pop();
+    return { ok: false, error: r.error };
+  }
+  sess.messages.push({ role: 'assistant', content: r.text });
+  sess.chat.push({ role: 'assistant', text: r.text });
+
+  // Update pins only if the model emitted a fresh CANDIDATES block.
+  let candidates = null;
+  if (/^[ \t]*CANDIDATES:/im.test(r.text) || /map candidates/i.test(r.text)) {
+    const resolved = await resolveCandidates(r.text, { webEnabled: sess.webEnabled, geoHits: [] });
+    if (resolved.length) {
+      candidates = resolved;
+      sess.candidates = resolved;
+      if (resolved[0]) sess.title = resolved[0].place || resolved[0].label || sess.title;
+      send('chat:located', { candidates });
+    }
+  }
+  saveSession(sess);
+  return { ok: true, text: r.text, candidates };
+});
+
+// ---------------------------------------------------------------------------
+// IPC: sessions / history + reset
+// ---------------------------------------------------------------------------
+ipcMain.handle('session:reset', () => {
+  // Resolve any pending question as "skipped" and forget the active chat so the
+  // next run starts completely fresh (frees the held conversation + images).
+  for (const finish of pendingQuestions.values()) finish(null);
+  pendingQuestions.clear();
+  currentSession = null;
+  return { ok: true };
+});
+
+ipcMain.handle('sessions:list', () => listSessions());
+
+ipcMain.handle('sessions:load', (_evt, id) => {
+  const s = loadSessionFile(id);
+  if (s) currentSession = s; // make it active so the user can keep chatting
+  return s;
+});
+
+ipcMain.handle('sessions:delete', (_evt, id) => {
+  removeSession(id);
+  if (currentSession && currentSession.id === id) currentSession = null;
+  return { ok: true };
 });
 
 function sleep(ms) {
@@ -774,7 +993,7 @@ async function describeHttpError(resp) {
 // no API key: OpenStreetMap Nominatim (geocoding), Wikipedia, DuckDuckGo.
 // ---------------------------------------------------------------------------
 const SEARCH_TIMEOUT_MS = 7000;
-const SEARCH_UA = 'GeolocatorBot/1.0 (personal desktop geolocation app)';
+const SEARCH_UA = 'Geolink/1.0 (personal desktop geolocation app)';
 
 async function fetchJsonSafe(url, headers) {
   const ctrl = new AbortController();
@@ -885,7 +1104,7 @@ async function wikiSearch(q) {
 }
 
 async function ddgInstant(q) {
-  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(q)}&format=json&no_html=1&no_redirect=1&t=geolocatorbot`;
+  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(q)}&format=json&no_html=1&no_redirect=1&t=geolink`;
   const j = await fetchJsonSafe(url);
   if (!j) return [];
   const out = [];

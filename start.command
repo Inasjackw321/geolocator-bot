@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Double-click this on macOS to open Geolocator Bot.
+# Double-click this on macOS to open Geolink.
 # (On Linux you can run ./start.command or ./start.sh from a terminal.)
 cd "$(dirname "$0")" || exit 1
 
@@ -15,5 +15,5 @@ if [ ! -d node_modules ]; then
   npm install || { echo "npm install failed."; read -r -p "Press Enter to close..."; exit 1; }
 fi
 
-echo "Starting Geolocator Bot..."
+echo "Starting Geolink..."
 npm start

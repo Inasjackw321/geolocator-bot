@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Easy launcher for Geolocator Bot.
+Easy launcher for Geolink.
 
 The app itself is an Electron (Node.js) desktop app, so this Python file doesn't
 *run* the app directly — it just boots it for you the same way you'd start any
@@ -53,7 +53,7 @@ def main():
                 pass
             return 1
 
-    print("Starting Geolocator Bot...")
+    print("Starting Geolink...")
     return subprocess.run([npm, "start"]).returncode
 
 

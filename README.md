@@ -1,4 +1,4 @@
-# 🌍 Geolocator Bot
+# 🌐 Geolink
 
 A cross-platform **desktop app** that uses a vision AI model to inspect a
 photograph and reason about *where on Earth it was taken* — like a GeoGuessr expert
@@ -66,10 +66,20 @@ opens straight away. First launch, click **⚙ Settings**, paste your
   output collapsible. Web searches appear as their own cards with the query and its
   map/web hits, so you can watch exactly what it's looking up. The map uses a clean
   **dark CARTO basemap** with crisp numbered pins.
-- **It can ask you a question (you can deny)** — if a single piece of info would
-  genuinely sharpen the guess (e.g. "Is this your home area or somewhere you
-  visited?"), the bot pops up **one** question mid-analysis. Answer it to steer the
+- **It can ask you a location question (you can deny)** — if a single piece of info
+  about *where* the photo was taken would genuinely sharpen the guess (e.g. "Is this
+  your home area or somewhere you visited?", "Which country do you think this is
+  in?"), the bot pops up **one** question mid-analysis. Answer it to steer the
   result, or hit **Skip** to carry on with the visual evidence alone — your call.
+- **Keep chatting to refine it** — after the first answer, a **follow-up chat** opens
+  under the map. Add a clue ("it's near a river") or ask it to narrow further ("can
+  you get the street?") and it continues the same conversation — updating the pins
+  whenever its guess changes.
+- **Saved chats** — every analysis is **saved automatically**. Open **🕑 History** to
+  revisit any past chat: its report, map pins and the full conversation come back,
+  and you can pick up refining right where you left off. **Clear** wipes the screen
+  *and* resets the AI to a clean slate (freeing memory) so each new photo starts
+  fresh.
 - **Geocoded pins + a self-check when unsure** — instead of trusting the model's
   guessed lat/long (often just a city centroid), the app looks each candidate's
   place up with **two free geocoders (OpenStreetMap Nominatim + Photon)** and ranks

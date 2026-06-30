@@ -37,6 +37,30 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('analyze:question', handler);
   },
   answerQuestion: (id, answer) => ipcRenderer.invoke('analyze:answer', { id, answer }),
+
+  // Follow-up chat (continue the conversation to refine the location)
+  followup: (message) => ipcRenderer.invoke('chat:followup', { message }),
+  onChatDelta: (cb) => {
+    const handler = (_evt, text) => cb(text);
+    ipcRenderer.on('chat:delta', handler);
+    return () => ipcRenderer.removeListener('chat:delta', handler);
+  },
+  onChatNote: (cb) => {
+    const handler = (_evt, text) => cb(text);
+    ipcRenderer.on('chat:note', handler);
+    return () => ipcRenderer.removeListener('chat:note', handler);
+  },
+  onChatLocated: (cb) => {
+    const handler = (_evt, info) => cb(info);
+    ipcRenderer.on('chat:located', handler);
+    return () => ipcRenderer.removeListener('chat:located', handler);
+  },
+
+  // Sessions / history + reset
+  resetSession: () => ipcRenderer.invoke('session:reset'),
+  listSessions: () => ipcRenderer.invoke('sessions:list'),
+  loadSession: (id) => ipcRenderer.invoke('sessions:load', id),
+  deleteSession: (id) => ipcRenderer.invoke('sessions:delete', id),
   onLocated: (cb) => {
     const handler = (_evt, loc) => cb(loc);
     ipcRenderer.on('analyze:located', handler);

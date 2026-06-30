@@ -26,6 +26,16 @@ const activityStatusEl = document.getElementById('activity-status');
 const usageEl = document.getElementById('usage');
 const modelBadge = document.getElementById('model-badge');
 
+const chatEl = document.getElementById('chat');
+const chatLog = document.getElementById('chat-log');
+const chatInput = document.getElementById('chat-input');
+const chatSend = document.getElementById('chat-send');
+
+const historyBtn = document.getElementById('history-btn');
+const historyModal = document.getElementById('history-modal');
+const historyList = document.getElementById('history-list');
+const historyClose = document.getElementById('history-close');
+
 const settingsBtn = document.getElementById('settings-btn');
 const settingsModal = document.getElementById('settings-modal');
 const apiKeyInput = document.getElementById('api-key');
@@ -47,6 +57,8 @@ const candidatesEl = document.getElementById('candidates');
 let images = []; // [{ mediaType, data, name }]
 const MAX_IMAGES = 8;
 let busy = false;
+let chatBusy = false;
+let currentSessionId = null; // set when an analysis completes or a chat is opened
 
 // --- Map (Leaflet, bundled locally) -----------------------------------------
 let map = null;
@@ -882,16 +894,37 @@ window.addEventListener('paste', (e) => {
 
 clearBtn.addEventListener('click', () => {
   if (busy) return;
+  resetAll();
+});
+
+// Full reset — wipes the UI AND tells the main process to drop the active
+// conversation (freeing the held messages/images) so the next run starts fresh.
+function resetAll() {
   clearImages();
+  note.value = '';
   resultEl.classList.add('hidden');
   resultEl.innerHTML = '';
   resultEmpty.classList.remove('hidden');
   activityEl.classList.add('hidden');
   activityStepsEl.innerHTML = '';
   usageEl.classList.add('hidden');
+  usageEl.textContent = '';
   progressEl.classList.add('hidden');
   hideMap();
-});
+  // Reset the follow-up chat.
+  chatEl.classList.add('hidden');
+  chatLog.innerHTML = '';
+  chatInput.value = '';
+  currentSessionId = null;
+  leftStatus.style.color = '';
+  leftStatus.textContent = '';
+  // Tell main to forget the conversation so the AI is fresh and memory is freed.
+  try {
+    window.api.resetSession();
+  } catch {
+    /* main may be mid-call; harmless */
+  }
+}
 
 // --- Analyze ----------------------------------------------------------------
 analyzeBtn.addEventListener('click', runAnalysis);
@@ -913,6 +946,10 @@ async function runAnalysis() {
   resultEmpty.classList.add('hidden');
   usageEl.classList.add('hidden');
   hideMap();
+  // Starting fresh: clear any previous run's follow-up chat.
+  chatEl.classList.add('hidden');
+  chatLog.innerHTML = '';
+  currentSessionId = null;
   // The structured report appears only once we reach the final step; until then
   // the activity timeline carries the progress.
   resultEl.classList.add('hidden');
@@ -1081,7 +1118,187 @@ async function runAnalysis() {
     usageEl.textContent = `${shortModelName(res.model)} · final step ${res.usage.input_tokens} in / ${res.usage.output_tokens} out tokens`;
     usageEl.classList.remove('hidden');
   }
+
+  // Open the follow-up chat so the user can refine the location further.
+  currentSessionId = res.sessionId || null;
+  openChat();
 }
+
+// --- Follow-up chat ---------------------------------------------------------
+function openChat() {
+  chatEl.classList.remove('hidden');
+}
+
+function addChatBubble(role, text) {
+  const wrap = document.createElement('div');
+  wrap.className = `chat-msg ${role}`;
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-bubble';
+  if (role === 'assistant') {
+    bubble.innerHTML = renderMarkdown(cleanForDisplay(text)) || '<p class="muted">…</p>';
+  } else {
+    bubble.textContent = text;
+  }
+  wrap.appendChild(bubble);
+  chatLog.appendChild(wrap);
+  chatLog.scrollTop = chatLog.scrollHeight;
+  return bubble;
+}
+
+function autoSizeChatInput() {
+  chatInput.style.height = 'auto';
+  chatInput.style.height = `${Math.min(120, chatInput.scrollHeight)}px`;
+}
+
+async function sendFollowup() {
+  if (chatBusy || busy) return;
+  const msg = chatInput.value.trim();
+  if (!msg) return;
+
+  chatBusy = true;
+  chatSend.classList.add('loading');
+  chatSend.disabled = true;
+  chatInput.value = '';
+  autoSizeChatInput();
+  addChatBubble('user', msg);
+
+  let raw = '';
+  const bubble = addChatBubble('assistant', '');
+  bubble.innerHTML = '<p class="muted">Thinking…</p>';
+
+  const offDelta = window.api.onChatDelta((d) => {
+    raw += d;
+    bubble.innerHTML = renderMarkdown(cleanForDisplay(raw)) || '<p class="muted">…</p>';
+    chatLog.scrollTop = chatLog.scrollHeight;
+  });
+  const offLocated = window.api.onChatLocated((payload) => {
+    const cands = payload && Array.isArray(payload.candidates) ? payload.candidates : [];
+    if (cands.length) showLocations(cands);
+  });
+
+  let res;
+  try {
+    res = await window.api.followup(msg);
+  } catch (e) {
+    res = { ok: false, error: e.message || String(e) };
+  }
+
+  offDelta();
+  offLocated();
+  chatBusy = false;
+  chatSend.classList.remove('loading');
+  chatSend.disabled = false;
+
+  if (!res.ok) {
+    bubble.innerHTML = `<p class="chat-error">${escapeHtml(res.error || 'Something went wrong.')}</p>`;
+    return;
+  }
+  bubble.innerHTML = renderMarkdown(cleanForDisplay(res.text)) || '<p class="muted">(no reply)</p>';
+  if (res.candidates && res.candidates.length) showLocations(res.candidates);
+  chatInput.focus();
+}
+
+chatSend.addEventListener('click', sendFollowup);
+chatInput.addEventListener('input', autoSizeChatInput);
+chatInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendFollowup();
+  }
+});
+
+// --- History (saved chats) --------------------------------------------------
+function closeHistory() {
+  historyModal.classList.add('hidden');
+}
+
+async function openHistory() {
+  historyModal.classList.remove('hidden');
+  historyList.innerHTML = '<p class="muted small">Loading…</p>';
+  let items = [];
+  try {
+    items = await window.api.listSessions();
+  } catch {
+    items = [];
+  }
+  if (!items.length) {
+    historyList.innerHTML = '<p class="muted small">No saved chats yet. Locate a photo to start one.</p>';
+    return;
+  }
+  historyList.innerHTML = '';
+  for (const it of items) {
+    const row = document.createElement('div');
+    row.className = 'history-row';
+    const when = new Date(it.updatedAt || it.createdAt || Date.now());
+    const turns = it.turns ? ` · ${it.turns} message${it.turns === 1 ? '' : 's'}` : '';
+    row.innerHTML =
+      '<button type="button" class="history-open">' +
+      '<span class="history-title"></span>' +
+      '<span class="history-meta muted"></span></button>' +
+      '<button type="button" class="history-del" title="Delete">×</button>';
+    row.querySelector('.history-title').textContent = it.title || 'Untitled location';
+    row.querySelector('.history-meta').textContent = when.toLocaleString() + turns;
+    row.querySelector('.history-open').addEventListener('click', () => loadHistory(it.id));
+    row.querySelector('.history-del').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try {
+        await window.api.deleteSession(it.id);
+      } catch {
+        /* ignore */
+      }
+      if (currentSessionId === it.id) currentSessionId = null;
+      openHistory();
+    });
+    historyList.appendChild(row);
+  }
+}
+
+async function loadHistory(id) {
+  let s = null;
+  try {
+    s = await window.api.loadSession(id);
+  } catch {
+    s = null;
+  }
+  if (!s) return;
+  closeHistory();
+  restoreSession(s);
+}
+
+// Rebuild the UI from a saved session (and main has already made it active).
+function restoreSession(s) {
+  busy = false;
+  chatBusy = false;
+  currentSessionId = s.id;
+
+  images = Array.isArray(s.images) ? s.images.map((im) => ({ ...im, highlights: [] })) : [];
+  renderThumbs();
+  note.value = s.note || '';
+
+  resultEmpty.classList.add('hidden');
+  activityEl.classList.add('hidden');
+  activityStepsEl.innerHTML = '';
+  progressEl.classList.add('hidden');
+  resultEl.classList.remove('hidden');
+  resultEl.innerHTML = renderMarkdown(cleanForDisplay(s.reportText || ''));
+  usageEl.classList.add('hidden');
+
+  if (Array.isArray(s.candidates) && s.candidates.length) showLocations(s.candidates);
+  else hideMap();
+
+  chatLog.innerHTML = '';
+  for (const m of s.chat || []) addChatBubble(m.role === 'user' ? 'user' : 'assistant', m.text);
+  openChat();
+
+  leftStatus.style.color = '';
+  leftStatus.textContent = 'Loaded a saved chat — keep refining it below.';
+}
+
+historyBtn.addEventListener('click', openHistory);
+historyClose.addEventListener('click', closeHistory);
+historyModal.addEventListener('click', (e) => {
+  if (e.target === historyModal) closeHistory();
+});
 
 // --- Tiny Markdown renderer -------------------------------------------------
 // Handles the subset the prompt emits: ## headings, **bold**, `code`,

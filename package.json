@@ -1,7 +1,7 @@
 {
-  "name": "geolocator-bot",
+  "name": "geolink",
   "version": "1.0.0",
-  "description": "AI desktop app that inspects photos and reasons about where they were taken",
+  "description": "Geolink — AI desktop app that inspects photos and reasons about where they were taken",
   "main": "main.js",
   "author": "",
   "license": "MIT",
@@ -10,8 +10,8 @@
     "dist": "electron-builder"
   },
   "build": {
-    "appId": "com.geolocator.bot",
-    "productName": "Geolocator Bot",
+    "appId": "com.geolink.app",
+    "productName": "Geolink",
     "files": [
       "main.js",
       "preload.js",
