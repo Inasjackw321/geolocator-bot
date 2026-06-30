@@ -1148,15 +1148,18 @@ async function runAnalysis() {
     usageEl.classList.remove('hidden');
   }
 
-  // Open the follow-up chat so the user can refine the location further.
+  // Open the follow-up chat so the user can refine the location further, and
+  // scroll it into view (with a brief highlight) so it's obvious it's there.
   currentSessionId = res.sessionId || null;
   openChat();
-  // Nudge the result into view (the timeline just collapsed above it).
   setTimeout(() => {
-    if (typeof resultEl.scrollIntoView === 'function') {
-      resultEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (typeof chatEl.scrollIntoView === 'function') {
+      chatEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
-  }, 120);
+    chatEl.classList.remove('flash');
+    void chatEl.offsetWidth; // restart the animation
+    chatEl.classList.add('flash');
+  }, 160);
 }
 
 // --- Follow-up chat ---------------------------------------------------------

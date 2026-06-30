@@ -1252,6 +1252,10 @@ button:disabled {
    ========================================================================= */
 .chat {
   margin-top: 14px;
+  /* flex:0 0 auto is essential: without it, the overflow:hidden below makes this
+     item's flex min-height compute to 0, so the scrolling right panel would
+     shrink the whole chat to zero height (it would vanish). */
+  flex: 0 0 auto;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--panel);
@@ -1259,6 +1263,15 @@ button:disabled {
   flex-direction: column;
   overflow: hidden;
   animation: fadeInUp 0.35s ease both;
+}
+/* A brief glow when the chat first appears, so the user notices the refine box. */
+.chat.flash {
+  animation: chatFlash 1.4s ease both;
+}
+@keyframes chatFlash {
+  0% { box-shadow: 0 0 0 0 rgba(110, 168, 254, 0); border-color: var(--border); }
+  25% { box-shadow: 0 0 0 4px rgba(110, 168, 254, 0.35); border-color: var(--accent); }
+  100% { box-shadow: 0 0 0 0 rgba(110, 168, 254, 0); border-color: var(--border); }
 }
 .chat-head {
   display: flex;
