@@ -49,8 +49,11 @@ opens straight away. First launch, click **⚙ Settings**, paste your
   searched, never your photos.
 - **Streamed analysis** — each step appears live, with a "Step X/5" progress
   indicator
-- **Result map** — drops a pin at the estimated coordinates (interactive
-  OpenStreetMap, plus a one-click "Open in Google Maps" link)
+- **Geocoded pin** — instead of trusting the model's guessed lat/long (often just
+  a city centroid), the app takes the final answer's address/place and looks it up
+  on **OpenStreetMap**, dropping the pin on the *real* coordinates (falling back to
+  suburb/city level if the exact address isn't found). Interactive map + one-click
+  "Open in Google Maps".
 - Structured output: best guess, confidence, estimated coordinates, the clues used,
   alternative possibilities, and what would narrow it down
 - Optional free-text context/question to steer the analysis

@@ -119,10 +119,10 @@ A bulleted list. For each clue, name what you saw and what it implies.
 ## What would narrow it down
 Briefly, what additional detail or angle would most increase your certainty.
 
-Finally, after everything above, output one last line in EXACTLY this format so an app can place a pin on a map — decimal degrees, nothing else on the line:
+Finally, after everything above, output these TWO lines exactly (nothing else on each line). The app will look the place up on a map, so make PLACE a clean, geocodable description — most specific first:
+PLACE: <street address or landmark, then suburb/neighbourhood, city, region, country>
 GEO: <latitude>, <longitude>
-If you genuinely cannot estimate coordinates, output:
-GEO: none`;
+If you genuinely cannot determine the location, output "PLACE: none" and "GEO: none".`;
 
 // Step 3 (reasoning): initial deduction from the observations, with candidates.
 const DEDUCE_PROMPT =
@@ -381,10 +381,32 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     });
     if (!final.ok) return { ok: false, error: final.error };
 
+    // --- Resolve the map pin by actually geocoding the final place -------
+    // The model's GEO line is often just a city centroid. If web search is on,
+    // look the place up on OpenStreetMap and pin the real coordinates.
+    const placeStr = parsePlace(final.text);
+    const modelGeo = parseGeoLine(final.text);
+    let located = null;
+
+    if (webEnabled && placeStr) {
+      send('analyze:note', `Looking up coordinates for: ${placeStr}…`);
+      try {
+        const hit = await geocodeBest(placeStr);
+        if (hit) located = { lat: hit.lat, lng: hit.lng, label: hit.name, source: 'osm' };
+      } catch {
+        /* fall back to the model's GEO below */
+      }
+    }
+    if (!located && modelGeo) {
+      located = { lat: modelGeo.lat, lng: modelGeo.lng, label: placeStr || 'Model estimate', source: 'model' };
+    }
+    if (located) send('analyze:located', located);
+
     return {
       ok: true,
       model: `${model} + ${reasoningModel}`,
       passesDone: total,
+      located,
       usage: lastUsage
         ? { input_tokens: lastUsage.prompt_tokens, output_tokens: lastUsage.completion_tokens }
         : null,
@@ -706,4 +728,38 @@ async function searchQuery(q) {
     ddgInstant(q),
   ]);
   return { query: q, places, web: [...web, ...wiki, ...ia].slice(0, 5) };
+}
+
+// Pull the "PLACE:" line the final step is asked to emit (geocodable string).
+function parsePlace(text) {
+  const m = String(text || '').match(/^[ \t]*PLACE:[ \t]*(.+)$/im);
+  if (!m) return '';
+  const v = m[1].trim();
+  return /^none$/i.test(v) ? '' : v;
+}
+
+// Pull the "GEO: lat, lng" fallback line.
+function parseGeoLine(text) {
+  const m = String(text || '').match(/^[ \t]*GEO:[ \t]*(-?\d{1,3}(?:\.\d+)?)[ \t]*,[ \t]*(-?\d{1,3}(?:\.\d+)?)/im);
+  if (!m) return null;
+  const lat = parseFloat(m[1]);
+  const lng = parseFloat(m[2]);
+  if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) return { lat, lng };
+  return null;
+}
+
+// Geocode the final place string with OpenStreetMap. If the most specific form
+// isn't found, drop the leading (most specific) comma segment and retry, so we
+// still land at suburb/city level instead of failing.
+async function geocodeBest(place) {
+  let q = String(place || '').trim();
+  for (let i = 0; i < 3 && q; i++) {
+    const hits = await geocode(q);
+    if (hits.length) return { lat: hits[0].lat, lng: hits[0].lng, name: hits[0].name, query: q };
+    const parts = q.split(',');
+    if (parts.length <= 1) break;
+    q = parts.slice(1).join(',').trim();
+    await sleep(400);
+  }
+  return null;
 }

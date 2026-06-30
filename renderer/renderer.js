@@ -58,14 +58,13 @@ function hideMap() {
   mapWrap.classList.add('hidden');
 }
 
-function showLocation(lat, lng, labelText) {
+function showLocation(lat, lng, labelText, zoom) {
   mapWrap.classList.remove('hidden');
   const m = ensureMap();
   // The container was hidden when created, so Leaflet must recompute its size.
   setTimeout(() => m.invalidateSize(), 0);
 
-  const zoom = 5;
-  m.setView([lat, lng], zoom);
+  m.setView([lat, lng], zoom || 5);
   if (marker) {
     marker.setLatLng([lat, lng]);
   } else {
@@ -113,9 +112,9 @@ function validatePair(lat, lng) {
   return null;
 }
 
-// Remove the GEO line so it isn't shown in the rendered analysis.
+// Remove the machine-readable GEO/PLACE lines so they aren't shown.
 function stripGeoLine(text) {
-  return text.replace(/^\s*GEO:.*$/gim, '').trimEnd();
+  return text.replace(/^\s*(GEO|PLACE):.*$/gim, '').trimEnd();
 }
 
 // Reasoning models (e.g. GLM-5.2) may emit a <think>...</think> chain of
@@ -438,6 +437,14 @@ async function runAnalysis() {
     leftStatus.textContent = text;
   });
 
+  // The main process resolves the pin (geocoded via OpenStreetMap when possible)
+  // and sends it here. These authoritative coordinates win over the GEO line.
+  let located = null;
+  const offLocated = window.api.onLocated((loc) => {
+    located = loc;
+    showLocation(loc.lat, loc.lng, loc.label || 'Best guess', loc.source === 'osm' ? 14 : 5);
+  });
+
   const res = await window.api.analyze({
     images: images.map((im) => ({ mediaType: im.mediaType, data: im.data })),
     note: note.value,
@@ -446,6 +453,7 @@ async function runAnalysis() {
   offDelta();
   offPass();
   offNote();
+  offLocated();
   resultEl.classList.remove('cursor');
   busy = false;
   updateButtons();
@@ -464,14 +472,31 @@ async function runAnalysis() {
   curFinal = true;
   const finalText = stripThink(raw);
   resultEl.innerHTML = renderMarkdown(cleanForDisplay(raw));
-  const coords = parseCoords(finalText);
-  if (coords) {
-    showLocation(coords.lat, coords.lng, bestGuessLine(finalText));
+
+  // Prefer the coordinates the main process resolved (geocoded via OpenStreetMap
+  // when possible); `res.located` is authoritative, the event was just for a live
+  // pre-completion update.
+  const loc = res.located || located;
+  if (loc) {
+    showLocation(
+      loc.lat,
+      loc.lng,
+      loc.label || bestGuessLine(finalText),
+      loc.source === 'osm' ? 14 : 5
+    );
     leftStatus.style.color = '';
-    leftStatus.textContent = 'Done.';
+    leftStatus.textContent =
+      loc.source === 'osm' ? 'Done — pin placed via OpenStreetMap.' : 'Done.';
   } else {
-    hideMap();
-    leftStatus.textContent = 'Done — no mappable coordinates were returned.';
+    const coords = parseCoords(finalText);
+    if (coords) {
+      showLocation(coords.lat, coords.lng, bestGuessLine(finalText));
+      leftStatus.style.color = '';
+      leftStatus.textContent = 'Done.';
+    } else {
+      hideMap();
+      leftStatus.textContent = 'Done — no mappable coordinates were returned.';
+    }
   }
 
   if (res.usage) {
