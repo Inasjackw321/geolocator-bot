@@ -843,17 +843,13 @@ button:disabled {
 }
 .cand-row {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: stretch;
   width: 100%;
-  text-align: left;
   background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 8px 10px;
-  cursor: pointer;
+  overflow: hidden;
   color: var(--text);
-  font-family: inherit;
   animation: fadeInUp 0.3s ease both;
   transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
 }
@@ -865,6 +861,39 @@ button:disabled {
 .cand-row.primary {
   border-color: var(--good);
   box-shadow: inset 0 0 0 1px rgba(90, 209, 154, 0.5);
+}
+.cand-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 8px 10px;
+  cursor: pointer;
+  color: inherit;
+  font-family: inherit;
+  transition: background 0.12s ease;
+}
+.cand-main:hover {
+  background: rgba(110, 168, 254, 0.08);
+}
+.cand-maps {
+  flex: 0 0 auto;
+  width: 40px;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--accent);
+  font-size: 15px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.cand-maps:hover {
+  background: var(--accent);
+  color: #06122b;
 }
 .cand-dot {
   flex: 0 0 auto;
@@ -928,14 +957,41 @@ button:disabled {
 .activity.done {
   max-height: 300px;
 }
+.activity.collapsed {
+  max-height: 46px;
+}
+.activity.collapsed .activity-steps {
+  display: none;
+}
+.activity.collapsed .activity-head {
+  border-bottom-color: transparent;
+}
 .activity-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
-  padding: 10px 14px;
+  width: 100%;
+  padding: 12px 14px;
+  border: none;
   border-bottom: 1px solid var(--border);
   background: rgba(20, 24, 42, 0.5);
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.activity-head:hover {
+  background: rgba(110, 168, 254, 0.08);
+}
+.activity-chevron {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 14px;
+  transition: transform 0.25s ease;
+}
+.activity.collapsed .activity-chevron {
+  transform: rotate(-90deg);
 }
 .activity-title {
   font-size: 13px;
@@ -964,12 +1020,13 @@ button:disabled {
   100% { box-shadow: 0 0 0 0 rgba(110, 168, 254, 0); }
 }
 .activity-status {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 11.5px;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 60%;
   transition: color 0.2s ease;
 }
 .activity-status.warn { color: var(--warn); }
@@ -1365,4 +1422,92 @@ button:disabled {
   background: #c0392b;
   color: #fff;
   border-color: #c0392b;
+}
+
+/* =========================================================================
+   Question modal (blocking) + extra polish
+   ========================================================================= */
+.question-modal {
+  width: 460px;
+  text-align: center;
+  animation: qPop 0.3s cubic-bezier(0.2, 0.8, 0.3, 1.2) both;
+}
+@keyframes qPop {
+  0% { opacity: 0; transform: scale(0.9) translateY(8px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+.q-modal-icon {
+  font-size: 34px;
+  margin-bottom: 2px;
+  animation: float 3.5s ease-in-out infinite;
+}
+.question-modal h2 {
+  margin: 0;
+}
+.question-text {
+  font-size: 15px;
+  line-height: 1.5;
+  margin: 8px 0 12px;
+  color: var(--text);
+  font-weight: 600;
+}
+.question-modal .text-input {
+  text-align: center;
+}
+.question-modal .modal-actions {
+  justify-content: center;
+}
+
+/* Candidate "best" tag as a small pill */
+.cand-tag {
+  align-self: center;
+  margin-right: 10px;
+  flex: 0 0 auto;
+  color: var(--good);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  background: rgba(90, 209, 154, 0.14);
+  padding: 2px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+/* Pins gently bounce in when they (re)appear after a refine */
+.map-wrap:not(.hidden) #map { animation: fadeIn 0.4s ease both; }
+
+/* Smooth height changes on the activity panel */
+.activity {
+  transition: max-height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Send button (chat) keeps the same spinner treatment as Analyze */
+#chat-send.loading .btn-spinner { display: inline-block; }
+
+/* Nicer scrollbars throughout the dark UI */
+.right::-webkit-scrollbar,
+.chat-log::-webkit-scrollbar,
+.activity-steps::-webkit-scrollbar,
+.history-list::-webkit-scrollbar,
+.candidates::-webkit-scrollbar,
+.result::-webkit-scrollbar {
+  width: 9px;
+}
+.right::-webkit-scrollbar-thumb,
+.chat-log::-webkit-scrollbar-thumb,
+.activity-steps::-webkit-scrollbar-thumb,
+.history-list::-webkit-scrollbar-thumb,
+.candidates::-webkit-scrollbar-thumb,
+.result::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+}
+.right::-webkit-scrollbar-thumb:hover,
+.chat-log::-webkit-scrollbar-thumb:hover {
+  background: #3b4570;
+}
+.right::-webkit-scrollbar-track,
+.chat-log::-webkit-scrollbar-track {
+  background: transparent;
 }

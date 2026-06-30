@@ -21,8 +21,15 @@ const editorDone = document.getElementById('editor-done');
 const resultEl = document.getElementById('result');
 const resultEmpty = document.getElementById('result-empty');
 const activityEl = document.getElementById('activity');
+const activityHeadEl = document.getElementById('activity-head');
 const activityStepsEl = document.getElementById('activity-steps');
 const activityStatusEl = document.getElementById('activity-status');
+
+const questionModal = document.getElementById('question-modal');
+const questionText = document.getElementById('question-text');
+const questionInput = document.getElementById('question-input');
+const questionSend = document.getElementById('question-send');
+const questionSkip = document.getElementById('question-skip');
 const usageEl = document.getElementById('usage');
 const modelBadge = document.getElementById('model-badge');
 
@@ -205,22 +212,41 @@ function renderCandidateList(cands) {
   candidatesEl.appendChild(head);
 
   cands.forEach((cand, i) => {
-    const row = document.createElement('button');
-    row.type = 'button';
+    const row = document.createElement('div');
     row.className = 'cand-row' + (cand.primary ? ' primary' : '');
     row.style.animationDelay = `${i * 0.07}s`;
-    row.innerHTML =
+
+    const main = document.createElement('button');
+    main.type = 'button';
+    main.className = 'cand-main';
+    main.innerHTML =
       `<span class="cand-dot">${i + 1}</span>` +
       `<span class="cand-body">` +
       `<span class="cand-label">${escapeHtml(cand.label || cand.place || `Candidate ${i + 1}`)}</span>` +
       (cand.reason ? `<span class="cand-reason">${escapeHtml(cand.reason)}</span>` : '') +
       `</span>` +
-      (cand.primary ? '<span class="cand-tag">★</span>' : '');
-    row.addEventListener('click', () => {
+      (cand.primary ? '<span class="cand-tag">★ best</span>' : '');
+    main.addEventListener('click', () => {
       flyToCandidate(cand);
       const mk = markerRefs[i];
       if (mk) mk.openPopup();
     });
+
+    // Per-candidate "open in Google Maps" so every option is reachable, not just
+    // the best guess.
+    const maps = document.createElement('button');
+    maps.type = 'button';
+    maps.className = 'cand-maps';
+    maps.title = 'Open this option in Google Maps';
+    maps.innerHTML = '<span aria-hidden="true">↗</span>';
+    maps.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const q = `${cand.lat},${cand.lng}`;
+      window.api.openExternal(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`);
+    });
+
+    row.appendChild(main);
+    row.appendChild(maps);
     candidatesEl.appendChild(row);
   });
 }
@@ -243,9 +269,11 @@ function resetActivity() {
   currentStep = null;
   activityStatusEl.textContent = '';
   activityStatusEl.className = 'activity-status';
-  activityEl.classList.remove('hidden');
-  activityEl.classList.remove('done');
+  activityEl.classList.remove('hidden', 'done', 'collapsed');
 }
+
+// Let the user collapse/expand the timeline.
+activityHeadEl.addEventListener('click', () => activityEl.classList.toggle('collapsed'));
 
 // Mark the active step finished, then start a new one. Returns the step element.
 function startStep(info) {
@@ -356,49 +384,48 @@ function cssEscape(s) {
   return String(s).replace(/["\\]/g, '\\$&');
 }
 
-// The model asked the user a clarifying question. Show a card with a text field
-// plus Answer / Skip — the user can deny by skipping. The reply (or nothing)
-// is sent back to the main process, which is awaiting it.
-function showQuestion(info) {
-  const li = document.createElement('li');
-  li.className = 'step question';
-  li.innerHTML =
-    '<div class="q-head"><span class="q-ico">💬</span>' +
-    '<span class="q-title">The bot has a question</span></div>' +
-    '<div class="q-text"></div>' +
-    '<div class="q-row"><input type="text" class="q-input" placeholder="Type your answer (optional)…" /></div>' +
-    '<div class="q-actions">' +
-    '<button type="button" class="ghost-btn q-skip">Skip</button>' +
-    '<button type="button" class="primary-btn q-send">Answer</button></div>';
-  li.querySelector('.q-text').textContent = info.question;
-  activityStepsEl.appendChild(li);
-  activityEl.scrollTop = activityEl.scrollHeight;
+// The model asked the user a clarifying question. The main process is BLOCKED
+// awaiting the reply, so we show a modal the user must act on — Answer or Skip
+// (deny) — before the analysis continues. A note is also logged in the timeline.
+let pendingQuestionId = null;
 
-  const input = li.querySelector('.q-input');
-  const reply = (val) => {
-    if (li.dataset.answered) return;
-    li.dataset.answered = '1';
-    window.api.answerQuestion(info.id, val || '');
-    li.classList.add('answered');
-    const row = li.querySelector('.q-row');
-    const actions = li.querySelector('.q-actions');
-    if (row) row.remove();
-    if (actions) actions.remove();
-    const res = document.createElement('div');
-    res.className = 'q-result';
-    res.textContent = val ? `✓ You answered: ${val}` : '— Skipped';
-    li.appendChild(res);
-  };
-  li.querySelector('.q-send').addEventListener('click', () => reply(input.value.trim()));
-  li.querySelector('.q-skip').addEventListener('click', () => reply(''));
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      reply(input.value.trim());
-    }
-  });
-  setTimeout(() => input.focus(), 60);
+function showQuestion(info) {
+  pendingQuestionId = info.id;
+  questionText.textContent = info.question;
+  questionInput.value = '';
+  questionModal.classList.remove('hidden');
+  setTimeout(() => questionInput.focus(), 80);
+
+  // Leave a breadcrumb in the activity timeline too.
+  if (currentStep) {
+    const n = document.createElement('div');
+    n.className = 'step-note';
+    n.textContent = `Asked you: ${info.question}`;
+    currentStep._body.appendChild(n);
+  }
 }
+
+function answerQuestion(value) {
+  if (pendingQuestionId == null) return;
+  const id = pendingQuestionId;
+  pendingQuestionId = null;
+  questionModal.classList.add('hidden');
+  window.api.answerQuestion(id, value || '');
+  activityStatusEl.textContent = value ? 'Thanks — continuing…' : 'Skipped — continuing…';
+  activityStatusEl.className = 'activity-status';
+}
+
+questionSend.addEventListener('click', () => answerQuestion(questionInput.value.trim()));
+questionSkip.addEventListener('click', () => answerQuestion(''));
+questionInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    answerQuestion(questionInput.value.trim());
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    answerQuestion('');
+  }
+});
 
 mapLink.addEventListener('click', (e) => {
   e.preventDefault();
@@ -1059,6 +1086,8 @@ async function runAnalysis() {
   finishStep(currentStep);
   currentStep = null;
   activityEl.classList.add('done');
+  // Collapse the finished timeline so the report, map and chat are front-and-centre.
+  if (res.ok) activityEl.classList.add('collapsed');
   resultEl.classList.remove('cursor');
   busy = false;
   updateButtons();
@@ -1122,6 +1151,12 @@ async function runAnalysis() {
   // Open the follow-up chat so the user can refine the location further.
   currentSessionId = res.sessionId || null;
   openChat();
+  // Nudge the result into view (the timeline just collapsed above it).
+  setTimeout(() => {
+    if (typeof resultEl.scrollIntoView === 'function') {
+      resultEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, 120);
 }
 
 // --- Follow-up chat ---------------------------------------------------------

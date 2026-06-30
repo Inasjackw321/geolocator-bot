@@ -110,23 +110,25 @@ If — and only if — a SINGLE piece of information from the user would substan
 
 At the very end, output a line starting with "SEARCHES:" followed by up to 5 web-search queries (one per line) that would best help identify the exact place. PRIORITISE the names of businesses, shops, restaurants, hotels, or brands visible on signs — each combined with your best guess of the city, region, or country (e.g. "Joe's Pizza Lyon France", "Hotel Splendide Bordeaux"). Also include street name + city, and any landmark names. Make each query specific and self-contained (don't rely on the others). If nothing is worth searching, write "SEARCHES: none".`;
 
-const REPORT_FORMAT = `## Best guess
-The MOST SPECIFIC location the evidence honestly supports. Always give the country and region; push further to city, then neighbourhood/district, then a specific street, road, or landmark whenever the clues justify it. Be as precise as the evidence allows — but never invent specificity you can't defend.
+const REPORT_FORMAT = `Use these exact section headings, and under each one write ONLY your actual findings. The parentheses are hints for you — do NOT copy the hint text into your answer, and do not repeat these instructions.
+
+## Best guess
+(the single most specific place the evidence supports — name the country and region, then push to city, district, and a specific street/road/landmark wherever the clues justify it)
 
 ## Confidence
-One of: Very low / Low / Medium / High / Very high — followed by a brief reason.
+(one of Very low / Low / Medium / High / Very high, then a one-line reason)
 
 ## Estimated coordinates
-Your best latitude/longitude estimate (decimal degrees) with a rough radius of uncertainty, or "Not determinable" if there genuinely isn't enough to go on.
+(best latitude, longitude in decimal degrees with a rough radius, or "Not determinable")
 
 ## Clues I used
-A bulleted list. For each clue, name what you saw and what it implies.
+(a bulleted list — each clue you saw and what it implies)
 
 ## Other possibilities
-2–4 plausible alternative locations and why they're in the running.
+(2–4 plausible alternative locations and why each is in the running)
 
 ## What would narrow it down
-Briefly, what additional detail or angle would most increase your certainty.
+(briefly, the one extra detail or angle that would most raise your certainty)
 
 Finally, after the report above, output a machine-readable list of map locations. Put the token "CANDIDATES:" on its own line — do NOT place it under a Markdown heading and do NOT wrap it in a code block — then one location per line in EXACTLY this pipe format, nothing else on those lines:
 CANDIDATES:

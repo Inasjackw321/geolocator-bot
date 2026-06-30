@@ -62,10 +62,11 @@
         </div>
 
         <section id="activity" class="activity hidden">
-          <div class="activity-head">
+          <button id="activity-head" class="activity-head" type="button">
             <span class="activity-title">Analysing</span>
             <span id="activity-status" class="activity-status"></span>
-          </div>
+            <span class="activity-chevron">⌄</span>
+          </button>
           <ol id="activity-steps" class="activity-steps"></ol>
         </section>
 
@@ -178,6 +179,21 @@
         <div class="modal-actions">
           <button id="editor-clear" class="ghost-btn" type="button">Clear boxes</button>
           <button id="editor-done" class="primary-btn" type="button">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Question modal (blocks until the user answers or skips) -->
+    <div id="question-modal" class="modal-backdrop hidden">
+      <div class="modal question-modal">
+        <div class="q-modal-icon">💬</div>
+        <h2>A quick question</h2>
+        <p class="muted small">Answering helps pin the location — or skip to let it carry on with the photo alone.</p>
+        <p id="question-text" class="question-text"></p>
+        <input id="question-input" type="text" class="text-input" placeholder="Type your answer…" />
+        <div class="modal-actions">
+          <button id="question-skip" class="ghost-btn" type="button">Skip</button>
+          <button id="question-send" class="primary-btn" type="button">Answer</button>
         </div>
       </div>
     </div>
