@@ -38,6 +38,7 @@ const webSearchInput = document.getElementById('web-search');
 const mapWrap = document.getElementById('map-wrap');
 const mapLabel = document.getElementById('map-label');
 const mapLink = document.getElementById('map-link');
+const candidatesEl = document.getElementById('candidates');
 
 // --- State ------------------------------------------------------------------
 let images = []; // [{ mediaType, data, name }]
@@ -46,7 +47,8 @@ let busy = false;
 
 // --- Map (Leaflet, bundled locally) -----------------------------------------
 let map = null;
-let marker = null;
+let markerLayer = null; // L.layerGroup holding the current candidate pins
+let markerRefs = []; // parallel to the rendered candidates, for list ↔ map sync
 
 // Tell Leaflet where its bundled marker images live.
 if (window.L) {
@@ -67,23 +69,160 @@ function hideMap() {
   mapWrap.classList.add('hidden');
 }
 
-function showLocation(lat, lng, labelText, zoom) {
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// Confidence → colour & word. High = green, medium = amber, low = red.
+function confColor(c) {
+  if (c == null || !Number.isFinite(c)) return '#8b93a7';
+  if (c >= 67) return '#34d399';
+  if (c >= 34) return '#fbbf24';
+  return '#f87171';
+}
+
+function confLabel(c) {
+  if (c == null || !Number.isFinite(c)) return 'Unrated';
+  if (c >= 67) return 'High';
+  if (c >= 34) return 'Medium';
+  return 'Low';
+}
+
+// A teardrop pin coloured by confidence, numbered by rank. The primary guess
+// gets a larger, accented marker. Pins drop in with a staggered animation.
+function pinIcon(cand, idx) {
+  const color = confColor(cand.confidence);
+  const cls = 'geo-pin' + (cand.primary ? ' geo-pin-primary' : '');
+  const html =
+    `<div class="${cls}" style="--pin:${color}; animation-delay:${idx * 0.12}s">` +
+    `<span class="geo-pin-num">${escapeHtml(String(idx + 1))}</span></div>`;
+  return L.divIcon({
+    className: 'geo-pin-wrap',
+    html,
+    iconSize: [30, 42],
+    iconAnchor: [15, 40],
+    popupAnchor: [0, -36],
+  });
+}
+
+// Drop one pin per candidate, fit the map to all of them, and render the
+// confidence list beneath. `candidates` is best-first; [0] is the primary.
+function showLocations(candidates) {
+  const cands = (candidates || []).filter(
+    (c) => c && Number.isFinite(c.lat) && Number.isFinite(c.lng)
+  );
+  if (!cands.length) {
+    hideMap();
+    return;
+  }
+
   mapWrap.classList.remove('hidden');
   const m = ensureMap();
   // The container was hidden when created, so Leaflet must recompute its size.
   setTimeout(() => m.invalidateSize(), 0);
 
-  m.setView([lat, lng], zoom || 5);
-  if (marker) {
-    marker.setLatLng([lat, lng]);
-  } else {
-    marker = L.marker([lat, lng]).addTo(m);
-  }
-  marker.bindPopup(labelText || 'Best guess').openPopup();
+  if (markerLayer) markerLayer.remove();
+  markerLayer = L.layerGroup().addTo(m);
+  markerRefs = [];
 
-  mapLabel.textContent = `📍 ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-  const q = `${lat},${lng}`;
+  const pts = [];
+  let primaryMarker = null;
+  cands.forEach((cand, i) => {
+    const mk = L.marker([cand.lat, cand.lng], {
+      icon: pinIcon(cand, i),
+      zIndexOffset: cand.primary ? 1000 : 0,
+    }).addTo(markerLayer);
+
+    const conf =
+      cand.confidence == null
+        ? ''
+        : `<span class="popup-conf" style="--pin:${confColor(cand.confidence)}">${confLabel(
+            cand.confidence
+          )} confidence · ${cand.confidence}%</span>`;
+    const title = escapeHtml(cand.label || cand.place || `Candidate ${i + 1}`);
+    const reason = cand.reason ? `<div class="popup-reason">${escapeHtml(cand.reason)}</div>` : '';
+    mk.bindPopup(
+      `<div class="map-popup"><div class="popup-title">${cand.primary ? '★ ' : `${i + 1}. `}${title}</div>${conf}${reason}</div>`
+    );
+
+    markerRefs.push(mk);
+    pts.push([cand.lat, cand.lng]);
+    if (cand.primary || i === 0) primaryMarker = mk;
+  });
+
+  const primary = cands[0];
+  if (pts.length === 1) {
+    m.setView(pts[0], primary.source === 'osm' ? 14 : 5);
+  } else {
+    m.fitBounds(pts, { padding: [42, 42], maxZoom: 14 });
+  }
+  if (primaryMarker) primaryMarker.openPopup();
+
+  mapLabel.textContent =
+    `📍 ${primary.lat.toFixed(4)}, ${primary.lng.toFixed(4)}` +
+    (cands.length > 1 ? ` · ${cands.length} candidates` : '');
+  const q = `${primary.lat},${primary.lng}`;
   mapLink.dataset.url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
+
+  renderCandidateList(cands);
+}
+
+// The confidence list under the map: a meter bar per candidate; click to fly.
+function renderCandidateList(cands) {
+  if (!candidatesEl) return;
+  candidatesEl.innerHTML = '';
+  if (!cands.length) {
+    candidatesEl.classList.add('hidden');
+    return;
+  }
+  candidatesEl.classList.remove('hidden');
+
+  const head = document.createElement('div');
+  head.className = 'candidates-head';
+  head.textContent = cands.length > 1 ? `${cands.length} possible locations` : 'Best guess';
+  candidatesEl.appendChild(head);
+
+  cands.forEach((cand, i) => {
+    const color = confColor(cand.confidence);
+    const pct = cand.confidence == null || !Number.isFinite(cand.confidence) ? 0 : cand.confidence;
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'cand-row' + (cand.primary ? ' primary' : '');
+    row.style.animationDelay = `${i * 0.07}s`;
+    row.innerHTML =
+      `<span class="cand-dot" style="--pin:${color}">${i + 1}</span>` +
+      `<span class="cand-body">` +
+      `<span class="cand-label">${escapeHtml(cand.label || cand.place || `Candidate ${i + 1}`)}</span>` +
+      `<span class="cand-meter"><span class="cand-meter-fill" style="width:0%; --pin:${color}"></span></span>` +
+      (cand.reason ? `<span class="cand-reason">${escapeHtml(cand.reason)}</span>` : '') +
+      `</span>` +
+      `<span class="cand-conf" style="--pin:${color}">${
+        cand.confidence == null || !Number.isFinite(cand.confidence) ? '—' : cand.confidence + '%'
+      }</span>`;
+    row.addEventListener('click', () => {
+      flyToCandidate(cand);
+      const mk = markerRefs[i];
+      if (mk) mk.openPopup();
+    });
+    candidatesEl.appendChild(row);
+    // Animate the meter fill on the next frame.
+    const fill = row.querySelector('.cand-meter-fill');
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      fill.style.width = `${pct}%`;
+    }));
+  });
+}
+
+// Smoothly recenter the map on a candidate when its list row is clicked.
+function flyToCandidate(cand) {
+  if (!map) return;
+  const z = Math.max(map.getZoom() || 0, cand.source === 'osm' ? 14 : 6);
+  if (typeof map.flyTo === 'function') map.flyTo([cand.lat, cand.lng], z, { duration: 0.6 });
+  else map.setView([cand.lat, cand.lng], z);
 }
 
 mapLink.addEventListener('click', (e) => {
@@ -121,9 +260,14 @@ function validatePair(lat, lng) {
   return null;
 }
 
-// Remove the machine-readable GEO/PLACE lines so they aren't shown.
+// Remove the machine-readable lines so they aren't shown: the legacy GEO/PLACE
+// lines and the CANDIDATES block (header + everything after it, since it's the
+// final output). Stripping mid-stream hides the raw pipe rows as they arrive.
 function stripGeoLine(text) {
-  return text.replace(/^\s*(GEO|PLACE):.*$/gim, '').trimEnd();
+  return text
+    .replace(/^[ \t]*CANDIDATES:[\s\S]*$/im, '')
+    .replace(/^\s*(GEO|PLACE):.*$/gim, '')
+    .trimEnd();
 }
 
 // Reasoning models (e.g. GLM-5.2) may emit a <think>...</think> chain of
@@ -654,12 +798,21 @@ async function runAnalysis() {
     leftStatus.textContent = text;
   });
 
-  // The main process resolves the pin (geocoded via OpenStreetMap when possible)
-  // and sends it here. These authoritative coordinates win over the GEO line.
+  // The main process resolves the pins (geocoded via OpenStreetMap when possible)
+  // and sends them here as a candidates array. These authoritative coordinates
+  // win over anything parsed from the text. Tolerates a legacy single-pin shape.
   let located = null;
-  const offLocated = window.api.onLocated((loc) => {
-    located = loc;
-    showLocation(loc.lat, loc.lng, loc.label || 'Best guess', loc.source === 'osm' ? 14 : 5);
+  const offLocated = window.api.onLocated((payload) => {
+    const cands =
+      payload && Array.isArray(payload.candidates)
+        ? payload.candidates
+        : payload && Number.isFinite(payload.lat)
+          ? [payload]
+          : [];
+    if (cands.length) {
+      located = cands;
+      showLocations(cands);
+    }
   });
 
   const res = await window.api.analyze({
@@ -696,24 +849,29 @@ async function runAnalysis() {
   const finalText = stripThink(raw);
   resultEl.innerHTML = renderMarkdown(cleanForDisplay(raw));
 
-  // Prefer the coordinates the main process resolved (geocoded via OpenStreetMap
-  // when possible); `res.located` is authoritative, the event was just for a live
-  // pre-completion update.
-  const loc = res.located || located;
-  if (loc) {
-    showLocation(
-      loc.lat,
-      loc.lng,
-      loc.label || bestGuessLine(finalText),
-      loc.source === 'osm' ? 14 : 5
-    );
+  // Prefer the candidates the main process resolved (geocoded via OpenStreetMap
+  // when possible); `res.candidates` is authoritative, the event was just for a
+  // live pre-completion update.
+  const cands =
+    res.candidates && res.candidates.length
+      ? res.candidates
+      : Array.isArray(located)
+        ? located
+        : [];
+  if (cands.length) {
+    showLocations(cands);
+    const anyOsm = cands.some((c) => c.source === 'osm');
     leftStatus.style.color = '';
     leftStatus.textContent =
-      loc.source === 'osm' ? 'Done — pin placed via OpenStreetMap.' : 'Done.';
+      cands.length > 1
+        ? `Done — ${cands.length} candidate locations mapped.`
+        : anyOsm
+          ? 'Done — pin placed via OpenStreetMap.'
+          : 'Done.';
   } else {
     const coords = parseCoords(finalText);
     if (coords) {
-      showLocation(coords.lat, coords.lng, bestGuessLine(finalText));
+      showLocations([{ lat: coords.lat, lng: coords.lng, label: bestGuessLine(finalText), primary: true }]);
       leftStatus.style.color = '';
       leftStatus.textContent = 'Done.';
     } else {

@@ -119,10 +119,10 @@ A bulleted list. For each clue, name what you saw and what it implies.
 ## What would narrow it down
 Briefly, what additional detail or angle would most increase your certainty.
 
-Finally, after everything above, output these TWO lines exactly (nothing else on each line). The app will look the place up on a map, so make PLACE a clean, geocodable description — most specific first:
-PLACE: <street address or landmark, then suburb/neighbourhood, city, region, country>
-GEO: <latitude>, <longitude>
-If you genuinely cannot determine the location, output "PLACE: none" and "GEO: none".`;
+Finally, after everything above, output a machine-readable list of map candidates — your single best guess first, then up to 3 alternative locations you consider plausible. Use EXACTLY this header and one line per candidate in this pipe format (nothing else on those lines):
+CANDIDATES:
+<confidence 0-100> | <geocodable place: address or landmark, suburb, city, region, country> | <latitude>, <longitude> | <short reason>
+Give each a realistic confidence (they need not sum to 100). If you truly cannot place it, output "CANDIDATES:" then a single line "0 | none | 0, 0 | insufficient evidence".`;
 
 // Step 3 (reasoning): initial deduction from the observations, with candidates.
 const DEDUCE_PROMPT =
@@ -397,50 +397,110 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     });
     if (!final.ok) return { ok: false, error: final.error };
 
-    // --- Resolve the map pin by actually geocoding the final place -------
-    // The model's GEO line is often just a city centroid. Prefer real geocoded
-    // coordinates: the final PLACE, else the most specific match we already
-    // found while searching, else the model's estimate.
-    const placeStr = parsePlace(final.text);
-    const modelGeo = parseGeoLine(final.text);
-    let located = null;
+    // --- Resolve map pins from the model's CANDIDATES block --------------
+    // The model emits up to 4 ranked candidates with confidence scores. We
+    // geocode each place for an accurate pin (the model's own lat/lng is often
+    // just a city centroid), keep its lat/lng as a fallback, and refine the top
+    // pick with the most specific nearby search hit. Emits an array of pins.
+    const parsed = parseCandidates(final.text);
+    const candidates = [];
 
-    if (webEnabled && placeStr) {
-      send('analyze:note', `Looking up coordinates for: ${placeStr}…`);
-      try {
-        const hit = await geocodeBest(placeStr);
-        if (hit) located = { lat: hit.lat, lng: hit.lng, label: hit.name, source: 'osm', rank: hit.rank || 0 };
-      } catch {
-        /* fall through */
+    for (let i = 0; i < parsed.length; i++) {
+      const c = parsed[i];
+      let lat = c.lat;
+      let lng = c.lng;
+      let label = c.place;
+      let source = 'model';
+      let rank = 0;
+      if (webEnabled && c.place) {
+        if (i === 0) send('analyze:note', `Looking up coordinates for: ${c.place}…`);
+        try {
+          const hit = await geocodeBest(c.place);
+          if (hit) {
+            lat = hit.lat;
+            lng = hit.lng;
+            label = hit.name;
+            source = 'osm';
+            rank = hit.rank || 0;
+          }
+        } catch {
+          /* keep the model's own coordinates */
+        }
       }
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+      candidates.push({
+        lat,
+        lng,
+        label,
+        place: c.place,
+        confidence: c.confidence,
+        reason: c.reason,
+        source,
+        rank,
+        primary: candidates.length === 0,
+      });
     }
 
-    // If a search hit is MORE specific than the geocoded place AND sits within
-    // ~150 km of the committed area, prefer it (refines the pin). The distance
-    // gate avoids pinning a same-named business in a different city/country.
-    if (webEnabled && geoHits.length) {
-      const ref = located || modelGeo; // {lat,lng} reference for the committed area
+    // Refine the primary pin: if a search hit is MORE specific than the geocoded
+    // place AND sits within ~150 km of it, prefer it. The distance gate avoids
+    // pinning a same-named business in a different city/country.
+    if (webEnabled && geoHits.length && candidates.length) {
+      const primary = candidates[0];
       const sorted = geoHits.slice().sort((a, b) => (b.rank || 0) - (a.rank || 0));
       for (const c of sorted) {
-        const moreSpecific = (c.rank || 0) > (located ? located.rank || 0 : 0);
-        const consistent = !ref || haversineKm(c, ref) < 150;
-        if (moreSpecific && consistent) {
-          located = { lat: c.lat, lng: c.lng, label: c.name, source: 'osm', rank: c.rank || 0 };
+        if ((c.rank || 0) > (primary.rank || 0) && haversineKm(c, primary) < 150) {
+          primary.lat = c.lat;
+          primary.lng = c.lng;
+          primary.label = c.name;
+          primary.source = 'osm';
+          primary.rank = c.rank || 0;
           break;
         }
       }
     }
 
-    if (!located && modelGeo) {
-      located = { lat: modelGeo.lat, lng: modelGeo.lng, label: placeStr || 'Model estimate', source: 'model' };
+    // Legacy fallback: if the model didn't emit a usable CANDIDATES block, fall
+    // back to the old PLACE/GEO single-pin resolution so we still drop a pin.
+    if (!candidates.length) {
+      const placeStr = parsePlace(final.text);
+      const modelGeo = parseGeoLine(final.text);
+      let lat;
+      let lng;
+      let label = placeStr || 'Model estimate';
+      let source = 'model';
+      let rank = 0;
+      if (webEnabled && placeStr) {
+        try {
+          const hit = await geocodeBest(placeStr);
+          if (hit) {
+            lat = hit.lat;
+            lng = hit.lng;
+            label = hit.name;
+            source = 'osm';
+            rank = hit.rank || 0;
+          }
+        } catch {
+          /* fall through */
+        }
+      }
+      if ((!Number.isFinite(lat) || !Number.isFinite(lng)) && modelGeo) {
+        lat = modelGeo.lat;
+        lng = modelGeo.lng;
+      }
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        candidates.push({ lat, lng, label, place: placeStr, confidence: null, reason: '', source, rank, primary: true });
+      }
     }
-    if (located) send('analyze:located', located);
+
+    const located = candidates[0] || null;
+    if (candidates.length) send('analyze:located', { candidates });
 
     return {
       ok: true,
       model: `${model} + ${reasoningModel}`,
       passesDone: total,
       located,
+      candidates,
       usage: lastUsage
         ? { input_tokens: lastUsage.prompt_tokens, output_tokens: lastUsage.completion_tokens }
         : null,
@@ -831,6 +891,67 @@ function parseGeoLine(text) {
   const lng = parseFloat(m[2]);
   if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) return { lat, lng };
   return null;
+}
+
+// Clamp a confidence token to an integer 0–100, or null if there's no number.
+function parseConfidence(s) {
+  const m = String(s || '').match(/-?\d+(?:\.\d+)?/);
+  if (!m) return null;
+  let n = parseFloat(m[0]);
+  if (!Number.isFinite(n)) return null;
+  if (n < 0) n = 0;
+  if (n > 100) n = 100;
+  return Math.round(n);
+}
+
+// Parse a "lat, lng" token into {lat,lng}, rejecting out-of-range or 0,0.
+function parseLatLng(s) {
+  const m = String(s || '').match(/(-?\d{1,3}(?:\.\d+)?)[ \t]*,[ \t]*(-?\d{1,3}(?:\.\d+)?)/);
+  if (!m) return null;
+  const lat = parseFloat(m[1]);
+  const lng = parseFloat(m[2]);
+  if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180 && !(lat === 0 && lng === 0)) {
+    return { lat, lng };
+  }
+  return null;
+}
+
+// Parse the "CANDIDATES:" block the final step emits — one location per line in
+// "<confidence 0-100> | <geocodable place> | <lat>, <lng> | <short reason>"
+// format. Best-first, up to 4, dropping the "none" placeholder. Returns
+// [{ confidence, place, lat, lng, reason }].
+function parseCandidates(text) {
+  const str = String(text || '');
+  const header = str.match(/^[ \t]*CANDIDATES:[ \t]*(.*)$/im);
+  if (!header) return [];
+  const start = str.indexOf(header[0]) + header[0].length;
+  // The header line may itself carry the first candidate (after "CANDIDATES:").
+  const body = (header[1] ? header[1] + '\n' : '') + str.slice(start);
+  const out = [];
+  for (const raw of body.split('\n')) {
+    let line = raw.trim();
+    if (!line) continue;
+    // Strip a leading bullet/number marker, but NOT the confidence number.
+    line = line.replace(/^(?:[-*•]|\d+[.)])\s+/, '');
+    if (!line.includes('|')) {
+      if (out.length) break; // left the block
+      continue;
+    }
+    const parts = line.split('|').map((p) => p.trim());
+    if (parts.length < 2) continue;
+    const place = parts[1] || '';
+    if (!place || /^none$/i.test(place)) continue;
+    const coords = parts[2] ? parseLatLng(parts[2]) : null;
+    out.push({
+      confidence: parseConfidence(parts[0]),
+      place,
+      lat: coords ? coords.lat : null,
+      lng: coords ? coords.lng : null,
+      reason: parts.slice(3).join(' | ').trim(),
+    });
+    if (out.length >= 4) break;
+  }
+  return out;
 }
 
 // Geocode the final place string with OpenStreetMap. If the most specific form
