@@ -339,6 +339,7 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
 
     // --- Web search (app-side; local models can't browse) ----------------
     let webContext = '';
+    const geoHits = []; // geocoded candidates collected during search (fallback pin)
     if (webEnabled) {
       send('analyze:pass', { pass: ++pass, total, label: 'Searching the web for clues' });
       const queries = parseSearches(obs2.text);
@@ -355,13 +356,16 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
             r = { query: q, places: [], web: [] };
           }
           let b = `Query: "${q}"\n`;
-          for (const pl of r.places) b += `- OpenStreetMap: ${pl.name} (${pl.lat.toFixed(4)}, ${pl.lng.toFixed(4)})\n`;
+          for (const pl of r.places) {
+            b += `- Map match: ${pl.name} (${pl.lat.toFixed(4)}, ${pl.lng.toFixed(4)})\n`;
+            geoHits.push({ ...pl, query: q });
+          }
           for (const w of r.web) b += `- ${w}\n`;
           if (!r.places.length && !r.web.length) b += '- (no results)\n';
           b += '\n';
           send('analyze:delta', b);
           blocks.push(b);
-          await sleep(400); // be polite to the free endpoints
+          await sleep(600); // be polite to the free endpoints
         }
         webContext = blocks.join('');
       }
@@ -394,8 +398,9 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     if (!final.ok) return { ok: false, error: final.error };
 
     // --- Resolve the map pin by actually geocoding the final place -------
-    // The model's GEO line is often just a city centroid. If web search is on,
-    // look the place up on OpenStreetMap and pin the real coordinates.
+    // The model's GEO line is often just a city centroid. Prefer real geocoded
+    // coordinates: the final PLACE, else the most specific match we already
+    // found while searching, else the model's estimate.
     const placeStr = parsePlace(final.text);
     const modelGeo = parseGeoLine(final.text);
     let located = null;
@@ -404,11 +409,28 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
       send('analyze:note', `Looking up coordinates for: ${placeStr}…`);
       try {
         const hit = await geocodeBest(placeStr);
-        if (hit) located = { lat: hit.lat, lng: hit.lng, label: hit.name, source: 'osm' };
+        if (hit) located = { lat: hit.lat, lng: hit.lng, label: hit.name, source: 'osm', rank: hit.rank || 0 };
       } catch {
-        /* fall back to the model's GEO below */
+        /* fall through */
       }
     }
+
+    // If a search hit is MORE specific than the geocoded place AND sits within
+    // ~150 km of the committed area, prefer it (refines the pin). The distance
+    // gate avoids pinning a same-named business in a different city/country.
+    if (webEnabled && geoHits.length) {
+      const ref = located || modelGeo; // {lat,lng} reference for the committed area
+      const sorted = geoHits.slice().sort((a, b) => (b.rank || 0) - (a.rank || 0));
+      for (const c of sorted) {
+        const moreSpecific = (c.rank || 0) > (located ? located.rank || 0 : 0);
+        const consistent = !ref || haversineKm(c, ref) < 150;
+        if (moreSpecific && consistent) {
+          located = { lat: c.lat, lng: c.lng, label: c.name, source: 'osm', rank: c.rank || 0 };
+          break;
+        }
+      }
+    }
+
     if (!located && modelGeo) {
       located = { lat: modelGeo.lat, lng: modelGeo.lng, label: placeStr || 'Model estimate', source: 'model' };
     }
@@ -430,6 +452,18 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+// Great-circle distance in km (used to keep search-hit pins near the deduced area).
+function haversineKm(a, b) {
+  const toRad = (d) => (d * Math.PI) / 180;
+  const R = 6371;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
 }
 
 const MAX_RETRIES = 5;
@@ -644,13 +678,52 @@ function parseSearches(text) {
   return out;
 }
 
-async function geocode(q) {
-  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=2&q=${encodeURIComponent(q)}`;
+// Two free geocoders for better coverage of streets & businesses. Each result
+// carries a `rank` (higher = more specific: house > street > suburb > city >
+// country) so we can prefer precise matches over centroids.
+async function nominatimGeocode(q) {
+  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=3&q=${encodeURIComponent(q)}`;
   const j = await fetchJsonSafe(url, { 'User-Agent': SEARCH_UA, 'Accept-Language': 'en' });
   if (!Array.isArray(j)) return [];
   return j
-    .map((p) => ({ name: p.display_name, lat: parseFloat(p.lat), lng: parseFloat(p.lon) }))
+    .map((p) => ({
+      name: p.display_name,
+      lat: parseFloat(p.lat),
+      lng: parseFloat(p.lon),
+      rank: Number(p.place_rank) || 14,
+      source: 'osm',
+    }))
     .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+}
+
+const PHOTON_RANK = { house: 30, building: 28, street: 26, locality: 22, district: 20, city: 16, county: 12, state: 8, country: 4 };
+
+async function photonGeocode(q) {
+  const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=3&lang=en`;
+  const j = await fetchJsonSafe(url, { 'User-Agent': SEARCH_UA });
+  const feats = (j && j.features) || [];
+  return feats
+    .map((f) => {
+      const c = (f.geometry && f.geometry.coordinates) || [];
+      const pr = f.properties || {};
+      const name = [pr.name, pr.street && `${pr.housenumber || ''} ${pr.street}`.trim(), pr.city, pr.state, pr.country]
+        .filter(Boolean)
+        .join(', ');
+      return {
+        name: name || pr.name || '',
+        lat: Number(c[1]),
+        lng: Number(c[0]),
+        rank: (pr.housenumber ? 30 : PHOTON_RANK[pr.type]) || 14,
+        source: 'photon',
+      };
+    })
+    .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng) && p.name);
+}
+
+// Merge both geocoders, most-specific first.
+async function geocode(q) {
+  const [a, b] = await Promise.all([nominatimGeocode(q), photonGeocode(q)]);
+  return [...a, ...b].sort((x, y) => y.rank - x.rank);
 }
 
 async function wikiSearch(q) {
@@ -739,7 +812,7 @@ async function searchQuery(q) {
     wikiSearch(q),
     ddgInstant(q),
   ]);
-  return { query: q, places, web: [...web, ...wiki, ...ia].slice(0, 5) };
+  return { query: q, places: places.slice(0, 2), web: [...web, ...wiki, ...ia].slice(0, 5) };
 }
 
 // Pull the "PLACE:" line the final step is asked to emit (geocodable string).
@@ -766,8 +839,11 @@ function parseGeoLine(text) {
 async function geocodeBest(place) {
   let q = String(place || '').trim();
   for (let i = 0; i < 3 && q; i++) {
-    const hits = await geocode(q);
-    if (hits.length) return { lat: hits[0].lat, lng: hits[0].lng, name: hits[0].name, query: q };
+    const hits = await geocode(q); // sorted most-specific first
+    if (hits.length) {
+      const h = hits[0];
+      return { lat: h.lat, lng: h.lng, name: h.name, rank: h.rank, query: q };
+    }
     const parts = q.split(',');
     if (parts.length <= 1) break;
     q = parts.slice(1).join(',').trim();

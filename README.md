@@ -56,10 +56,13 @@ opens straight away. First launch, click **⚙ Settings**, paste your
 - **Streamed analysis** — each step appears live, with a "Step X/5" progress
   indicator
 - **Geocoded pin** — instead of trusting the model's guessed lat/long (often just
-  a city centroid), the app takes the final answer's address/place and looks it up
-  on **OpenStreetMap**, dropping the pin on the *real* coordinates (falling back to
-  suburb/city level if the exact address isn't found). Interactive map + one-click
-  "Open in Google Maps".
+  a city centroid), the app looks the final address/place up with **two free
+  geocoders (OpenStreetMap Nominatim + Photon)**, ranks the matches by specificity
+  (house/street beats city), and pins the most precise one. If the exact address
+  doesn't resolve it falls back to the best business/landmark coordinate found
+  during the web search — but only if it's within ~150 km of the deduced area, so
+  a same-named business in another city won't hijack the pin. Interactive map +
+  one-click "Open in Google Maps".
 - Structured output: best guess, confidence, estimated coordinates, the clues used,
   alternative possibilities, and what would narrow it down
 - Optional free-text context/question to steer the analysis
