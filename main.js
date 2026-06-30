@@ -52,11 +52,10 @@ const DEFAULT_MODEL = 'zai-org/GLM-4.5V';
 // vision model's written answers. (huggingface.co/zai-org/GLM-5.2)
 const DEFAULT_REASONING_MODEL = 'zai-org/GLM-5.2';
 
-// Geocoding sanity gates (km). A geocoded place is only trusted if it lands
-// within GEOCODE_TRUST_KM of the model's own estimate for that candidate; an
-// alternative pin is dropped if it ends up more than ALT_MAX_KM from the best
-// guess. Both guard against a vague name matching a same-named place elsewhere.
-const GEOCODE_TRUST_KM = 400;
+// Geocoding sanity gate (km): an alternative pin is dropped if it ends up more
+// than ALT_MAX_KM from the best guess (alternatives for one photo shouldn't be
+// on another continent). Whether to trust a geocode over the model's own coords
+// is decided by name agreement (geoConsistent), not distance.
 const ALT_MAX_KM = 3000;
 
 // Sanitize a stored model ID for Hugging Face. Old OpenRouter settings used a
@@ -106,8 +105,6 @@ const VISION_NARROW_PROMPT = `Now look again at the photo(s) even more closely, 
 - Unique architectural, signage, or streetscape details that could be matched to a specific place.
 List the concrete specifics you find. If something is partially legible, give your best reading and say it's uncertain. Still do not give the final answer.
 
-ALWAYS output one line starting with "QUESTION:" containing the single most useful question to ask the user about WHERE this photo was taken — pick the one whose answer would most help you place it (e.g. "Is this your home area or somewhere you travelled to?", "Which country or region do you believe this is in?", "Roughly what year was this taken?", "Do you know the name of the street or building?"). Ask only about placing the photo, and ask exactly one short question. The user can choose to skip it, so always provide a question. Only write "QUESTION: none" if you are already certain of the exact building or street address.
-
 At the very end, output a line starting with "SEARCHES:" followed by up to 5 web-search queries (one per line) that would best help identify the exact place. PRIORITISE the names of businesses, shops, restaurants, hotels, or brands visible on signs — each combined with your best guess of the city, region, or country (e.g. "Joe's Pizza Lyon France", "Hotel Splendide Bordeaux"). Also include street name + city, and any landmark names. Make each query specific and self-contained (don't rely on the others). If nothing is worth searching, write "SEARCHES: none".`;
 
 const REPORT_FORMAT = `Use these exact section headings, and under each one write ONLY your actual findings. The parentheses are hints for you — do NOT copy the hint text into your answer, and do not repeat these instructions.
@@ -138,6 +135,7 @@ List your committed best guess FIRST, and make that first line as specific as th
 // Step 3 (reasoning): initial deduction from the observations, with candidates.
 const DEDUCE_PROMPT =
   'Reason step by step from these observations toward a location. Give your current best country → region → city, and list 2–4 candidate specific locations (district/street/landmark) with the concrete evidence for and against each. Do not finalise yet — this is your working deduction.\n\n' +
+  'Then output one line "QUESTION:" containing the single most useful question to ask the user about WHERE this photo was taken — the one whose answer would most help you place it (e.g. "Is this your home area or somewhere you travelled to?", "Which country or region do you believe this is in?", "Roughly what year was this taken?", "Do you know the street or building name?"). Ask exactly one short question about placing the photo. The user may skip it, so always provide one — only write "QUESTION: none" if you are already certain of the exact street address.\n\n' +
   'Then output one line "BESTSOFAR:" with your single most likely place written as a geocodable string (most specific first: landmark or street, suburb, city, region, country).\n\n' +
   'Then output between 1 and 4 lines starting with "VERIFY:" — specific web-search queries (one per line) that would best CONFIRM or rule out your top candidates: the exact landmark, street or business combined with the city and country (e.g. "Pothonggang Park Pyongyang", "Rue Saint-Denis 12 Montréal"). You MUST provide at least one VERIFY query — never write "VERIFY: none". The app will run BESTSOFAR plus these searches and give you the results before you commit, so choose queries whose answers would most change your confidence.';
 
@@ -509,17 +507,6 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
 
     const observations = `${obs1.text}\n\nCloser look — narrowing details:\n${obs2.text}`;
 
-    // --- Optional: let the model ask the user one clarifying question -----
-    const pendingQ = parseQuestion(obs2.text);
-    let answerNote = '';
-    if (pendingQ) {
-      send('analyze:note', 'The bot has a question for you…');
-      const userAnswer = await askUser(send, pendingQ);
-      answerNote = userAnswer
-        ? `\n\nThe analyst asked the user: "${pendingQ}"\nThe user answered: ${userAnswer}\nTake this into account.`
-        : `\n\nThe analyst asked the user: "${pendingQ}" but the user chose not to answer — proceed using the visual evidence alone.`;
-    }
-
     // --- Web search round 1: clues the vision model read ----------------
     let webContext = '';
     const geoHits = []; // geocoded candidates collected during search (fallback pin)
@@ -535,7 +522,6 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
         role: 'user',
         content:
           `A vision analyst examined ${photoWord} of one location and reported:\n\n${observations}` +
-          answerNote +
           (webContext
             ? `\n\nWeb search results gathered from those clues (use them to verify and pin the location; ignore irrelevant hits):\n\n${webContext}`
             : '') +
@@ -547,6 +533,19 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     });
     if (!deduce.ok) return { ok: false, error: deduce.error };
     reasonMessages.push({ role: 'assistant', content: deduce.text });
+
+    // --- Ask the user the reasoning model's clarifying question ----------
+    // (Asked here, after the deduction, so it's well-informed and reliable —
+    // the reasoning model follows the instruction better than the vision one.)
+    const pendingQ = parseQuestion(deduce.text);
+    let answerNote = '';
+    if (pendingQ) {
+      send('analyze:note', 'The bot has a question for you…');
+      const userAnswer = await askUser(send, pendingQ);
+      answerNote = userAnswer
+        ? `\n\nThe user was asked: "${pendingQ}"\nThe user answered: ${userAnswer}\nWeigh this answer in your final decision.`
+        : `\n\nThe user was asked: "${pendingQ}" but chose not to answer — proceed using the visual and web evidence alone.`;
+    }
 
     // --- Web search round 2: verify the deduced candidates --------------
     // A second, targeted search of the model's OWN top candidates — this is what
@@ -574,7 +573,10 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     const commitContent =
       (verifyContext
         ? `Fresh web-search results gathered to CONFIRM your candidate locations (use them to verify your answer, correct it if they contradict you, or sharpen the exact place; ignore irrelevant hits):\n\n${verifyContext}\n\n`
-        : '') + FINAL_PROMPT;
+        : '') +
+      answerNote +
+      (answerNote ? '\n\n' : '') +
+      FINAL_PROMPT;
     reasonMessages.push({ role: 'user', content: commitContent });
     const final = await step('Final location', {
       model: reasoningModel, messages: reasonMessages, maxTokens: 2000, final: true,
@@ -586,6 +588,7 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
       webEnabled,
       geoHits,
       note: (m) => send('analyze:note', m),
+      onSearch: (info) => send('analyze:search', info),
     });
     const located = candidates[0] || null;
     if (candidates.length) send('analyze:located', { candidates });
@@ -630,8 +633,9 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
 // accurate pin (the model's own lat/lng is often a city centroid), keeping its
 // lat/lng only as a fallback, and never let an arbitrary web hit override a
 // geocoded place. `note` is an optional progress callback.
-async function resolveCandidates(finalText, { webEnabled, geoHits = [], note } = {}) {
+async function resolveCandidates(finalText, { webEnabled, geoHits = [], note, onSearch } = {}) {
   const tell = typeof note === 'function' ? note : () => {};
+  const showSearch = typeof onSearch === 'function' ? onSearch : () => {};
   const parsed = parseCandidates(finalText);
   const candidates = [];
 
@@ -647,13 +651,14 @@ async function resolveCandidates(finalText, { webEnabled, geoHits = [], note } =
       try {
         const hit = await geocodeBest(c.place);
         if (hit) {
-          // Trust the geocode only if it lands near the model's OWN estimate for
-          // this candidate. A vague place string ("Suburbia…") can match a
-          // same-named spot on the other side of the planet; the gate rejects
-          // those (e.g. a Canberra guess geocoding to Culiacán, Mexico).
-          const modelPt =
-            Number.isFinite(c.lat) && Number.isFinite(c.lng) ? { lat: c.lat, lng: c.lng } : null;
-          if (!modelPt || haversineKm(hit, modelPt) < GEOCODE_TRUST_KM) {
+          // PREFER the geocoded coordinates of the place NAME — the model's own
+          // lat/lng is frequently hallucinated (e.g. an Australian place tagged
+          // with coordinates near Japan). We only keep the model's coords when
+          // the geocoded result's name clearly DISAGREES with the place the
+          // model wrote (a vague name matching a same-named spot elsewhere, e.g.
+          // "Suburbia" → Culiacán, Mexico) AND the model actually gave coords.
+          const hasModelPt = Number.isFinite(c.lat) && Number.isFinite(c.lng);
+          if (geoConsistent(c.place, hit.name) || !hasModelPt) {
             lat = hit.lat;
             lng = hit.lng;
             label = hit.name;
@@ -679,8 +684,14 @@ async function resolveCandidates(finalText, { webEnabled, geoHits = [], note } =
     const primary = candidates[0];
     if (primary.place) {
       tell(`Double-checking the exact spot for: ${primary.place}…`);
+      showSearch({ query: primary.place, pending: true });
       try {
         const r = await searchQuery(primary.place);
+        showSearch({
+          query: primary.place,
+          places: (r.places || []).map((pl) => ({ name: pl.name, lat: pl.lat, lng: pl.lng })),
+          web: r.web || [],
+        });
         const best = (r.places || []).slice().sort((a, b) => (b.rank || 0) - (a.rank || 0))[0];
         if (best && (best.rank || 0) > (primary.rank || 0) && haversineKm(best, primary) < 40) {
           primary.lat = best.lat;
@@ -690,7 +701,8 @@ async function resolveCandidates(finalText, { webEnabled, geoHits = [], note } =
           primary.rank = best.rank || 0;
         }
       } catch {
-        /* keep the unrefined pin */
+        // Resolve the card even if the lookup failed, so it doesn't spin forever.
+        showSearch({ query: primary.place, places: [], web: [] });
       }
     }
   }
@@ -821,6 +833,27 @@ ipcMain.handle('sessions:delete', (_evt, id) => {
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+// Does a geocoder's result name agree with the place string the model wrote?
+// Compares significant tokens (≥4 chars) — used to decide whether to trust a
+// geocode over the model's own (often hallucinated) coordinates. Lenient: a
+// couple of shared tokens (e.g. a city + country) is enough.
+function geoConsistent(placeStr, geoName) {
+  const norm = (s) =>
+    String(s || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '') // strip combining diacritics
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+  const name = norm(geoName);
+  if (!name) return false;
+  const tokens = [...new Set(norm(placeStr).split(' ').filter((t) => t.length >= 4))];
+  if (!tokens.length) return true; // nothing specific to check — accept
+  let hits = 0;
+  for (const t of tokens) if (name.includes(t)) hits++;
+  return hits >= 2 || (tokens.length <= 2 && hits >= 1);
 }
 
 // Great-circle distance in km (used to keep search-hit pins near the deduced area).
