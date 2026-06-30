@@ -64,7 +64,12 @@ opens straight away. First launch, click **⚙ Settings**, paste your
 - **Live activity timeline** — instead of dumping raw text, the analysis shows as a
   tidy **step-by-step timeline** (spinner → ✓ for each stage), with each step's
   output collapsible. Web searches appear as their own cards with the query and its
-  map/web hits, so you can watch exactly what it's looking up.
+  map/web hits, so you can watch exactly what it's looking up. The map uses a clean
+  **dark CARTO basemap** with crisp numbered pins.
+- **It can ask you a question (you can deny)** — if a single piece of info would
+  genuinely sharpen the guess (e.g. "Is this your home area or somewhere you
+  visited?"), the bot pops up **one** question mid-analysis. Answer it to steer the
+  result, or hit **Skip** to carry on with the visual evidence alone — your call.
 - **Geocoded pins + a self-check when unsure** — instead of trusting the model's
   guessed lat/long (often just a city centroid), the app looks each candidate's
   place up with **two free geocoders (OpenStreetMap Nominatim + Photon)** and ranks

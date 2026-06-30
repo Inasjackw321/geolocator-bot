@@ -60,10 +60,19 @@ if (window.L) {
 
 function ensureMap() {
   if (map) return map;
-  map = L.map('map', { zoomControl: true, attributionControl: true });
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '© OpenStreetMap contributors',
+  map = L.map('map', {
+    zoomControl: true,
+    attributionControl: true,
+    scrollWheelZoom: true,
+    worldCopyJump: true,
+  });
+  // CARTO dark basemap (free, no key) to match the app's dark theme; @2x tiles
+  // stay crisp on high-DPI screens. Falls back gracefully if a tile is missing.
+  L.tileLayer('https://{s}.basemap.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    maxZoom: 20,
+    detectRetina: true,
+    subdomains: 'abcd',
+    attribution: '© OpenStreetMap contributors © CARTO',
   }).addTo(map);
   return map;
 }
@@ -80,19 +89,22 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;');
 }
 
-// A numbered teardrop pin. The primary (best) guess gets a larger, accented
-// marker; alternatives are dimmer. Pins drop in with a staggered animation.
+// A clean numbered map marker: a circular badge with a small pointer tail. The
+// primary (best) guess is larger and accented; alternatives are dimmer. Pins
+// drop in with a staggered animation.
 function pinIcon(cand, idx) {
   const cls = 'geo-pin' + (cand.primary ? ' geo-pin-primary' : ' geo-pin-alt');
   const html =
-    `<div class="${cls}" style="animation-delay:${idx * 0.12}s">` +
-    `<span class="geo-pin-num">${escapeHtml(String(idx + 1))}</span></div>`;
+    `<div class="${cls}" style="animation-delay:${idx * 0.1}s">` +
+    `<span class="geo-pin-num">${escapeHtml(String(idx + 1))}</span>` +
+    '<span class="geo-pin-tail"></span></div>';
+  const big = Boolean(cand.primary);
   return L.divIcon({
     className: 'geo-pin-wrap',
     html,
-    iconSize: [30, 42],
-    iconAnchor: [15, 40],
-    popupAnchor: [0, -36],
+    iconSize: big ? [38, 48] : [30, 40],
+    iconAnchor: big ? [19, 46] : [15, 38],
+    popupAnchor: [0, big ? -44 : -36],
   });
 }
 
@@ -318,6 +330,50 @@ function stepAddSearch(info) {
 // Minimal CSS attribute-selector escaper for the query string.
 function cssEscape(s) {
   return String(s).replace(/["\\]/g, '\\$&');
+}
+
+// The model asked the user a clarifying question. Show a card with a text field
+// plus Answer / Skip — the user can deny by skipping. The reply (or nothing)
+// is sent back to the main process, which is awaiting it.
+function showQuestion(info) {
+  const li = document.createElement('li');
+  li.className = 'step question';
+  li.innerHTML =
+    '<div class="q-head"><span class="q-ico">💬</span>' +
+    '<span class="q-title">The bot has a question</span></div>' +
+    '<div class="q-text"></div>' +
+    '<div class="q-row"><input type="text" class="q-input" placeholder="Type your answer (optional)…" /></div>' +
+    '<div class="q-actions">' +
+    '<button type="button" class="ghost-btn q-skip">Skip</button>' +
+    '<button type="button" class="primary-btn q-send">Answer</button></div>';
+  li.querySelector('.q-text').textContent = info.question;
+  activityStepsEl.appendChild(li);
+  activityEl.scrollTop = activityEl.scrollHeight;
+
+  const input = li.querySelector('.q-input');
+  const reply = (val) => {
+    if (li.dataset.answered) return;
+    li.dataset.answered = '1';
+    window.api.answerQuestion(info.id, val || '');
+    li.classList.add('answered');
+    const row = li.querySelector('.q-row');
+    const actions = li.querySelector('.q-actions');
+    if (row) row.remove();
+    if (actions) actions.remove();
+    const res = document.createElement('div');
+    res.className = 'q-result';
+    res.textContent = val ? `✓ You answered: ${val}` : '— Skipped';
+    li.appendChild(res);
+  };
+  li.querySelector('.q-send').addEventListener('click', () => reply(input.value.trim()));
+  li.querySelector('.q-skip').addEventListener('click', () => reply(''));
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      reply(input.value.trim());
+    }
+  });
+  setTimeout(() => input.focus(), 60);
 }
 
 mapLink.addEventListener('click', (e) => {
@@ -920,6 +976,7 @@ async function runAnalysis() {
   });
 
   const offSearch = window.api.onSearch((info) => stepAddSearch(info));
+  const offQuestion = window.api.onQuestion((info) => showQuestion(info));
 
   // The main process resolves the pins (geocoded via OpenStreetMap when possible)
   // and sends them here as a candidates array. These authoritative coordinates
@@ -948,6 +1005,7 @@ async function runAnalysis() {
   offPass();
   offNote();
   offSearch();
+  offQuestion();
   offLocated();
   finishStep(currentStep);
   currentStep = null;

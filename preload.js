@@ -31,6 +31,12 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('analyze:search', handler);
     return () => ipcRenderer.removeListener('analyze:search', handler);
   },
+  onQuestion: (cb) => {
+    const handler = (_evt, info) => cb(info);
+    ipcRenderer.on('analyze:question', handler);
+    return () => ipcRenderer.removeListener('analyze:question', handler);
+  },
+  answerQuestion: (id, answer) => ipcRenderer.invoke('analyze:answer', { id, answer }),
   onLocated: (cb) => {
     const handler = (_evt, loc) => cb(loc);
     ipcRenderer.on('analyze:located', handler);

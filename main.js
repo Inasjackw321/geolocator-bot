@@ -52,6 +52,13 @@ const DEFAULT_MODEL = 'zai-org/GLM-4.5V';
 // vision model's written answers. (huggingface.co/zai-org/GLM-5.2)
 const DEFAULT_REASONING_MODEL = 'zai-org/GLM-5.2';
 
+// Geocoding sanity gates (km). A geocoded place is only trusted if it lands
+// within GEOCODE_TRUST_KM of the model's own estimate for that candidate; an
+// alternative pin is dropped if it ends up more than ALT_MAX_KM from the best
+// guess. Both guard against a vague name matching a same-named place elsewhere.
+const GEOCODE_TRUST_KM = 400;
+const ALT_MAX_KM = 3000;
+
 // Sanitize a stored model ID for Hugging Face. Old OpenRouter settings used a
 // ":free" suffix, which HF mis-reads as a provider ("provider 'free' is not
 // valid"); treat those as stale and fall back to the HF default. Real HF
@@ -98,6 +105,8 @@ const VISION_NARROW_PROMPT = `Now look again at the photo(s) even more closely, 
 - License-plate region codes, stickers, or colours; bus/taxi markings.
 - Unique architectural, signage, or streetscape details that could be matched to a specific place.
 List the concrete specifics you find. If something is partially legible, give your best reading and say it's uncertain. Still do not give the final answer.
+
+If — and only if — a SINGLE specific piece of information from the user would substantially improve the location guess (something you genuinely cannot infer from the photos, e.g. "Is this your home area or somewhere you visited?" or "Roughly what year was this taken?"), output one line starting with "QUESTION:" containing that one short question for the user. Only ask when it would really help; otherwise output "QUESTION: none". Never ask more than one question.
 
 At the very end, output a line starting with "SEARCHES:" followed by up to 5 web-search queries (one per line) that would best help identify the exact place. PRIORITISE the names of businesses, shops, restaurants, hotels, or brands visible on signs — each combined with your best guess of the city, region, or country (e.g. "Joe's Pizza Lyon France", "Hotel Splendide Bordeaux"). Also include street name + city, and any landmark names. Make each query specific and self-contained (don't rely on the others). If nothing is worth searching, write "SEARCHES: none".`;
 
@@ -201,6 +210,43 @@ ipcMain.handle('open:external', (_evt, url) => {
     shell.openExternal(url);
   }
 });
+
+// --- Mid-analysis questions -------------------------------------------------
+// The model may ask the user one clarifying question. The main process sends it
+// to the renderer and awaits a reply via this handler; the user can answer or
+// skip (deny), and a timeout proceeds without an answer so analysis never hangs.
+const pendingQuestions = new Map();
+let questionSeq = 0;
+
+ipcMain.handle('analyze:answer', (_evt, payload) => {
+  const id = payload && payload.id;
+  const finish = id != null ? pendingQuestions.get(id) : null;
+  if (finish) finish(payload ? payload.answer : null);
+});
+
+function askUser(send, question, timeoutMs = 180000) {
+  const id = `q${++questionSeq}`;
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (val) => {
+      if (done) return;
+      done = true;
+      pendingQuestions.delete(id);
+      resolve(typeof val === 'string' && val.trim() ? val.trim() : null);
+    };
+    pendingQuestions.set(id, finish);
+    send('analyze:question', { id, question });
+    setTimeout(() => finish(null), timeoutMs);
+  });
+}
+
+// Pull an optional "QUESTION:" the vision step may emit for the user.
+function parseQuestion(text) {
+  const m = String(text || '').match(/^[ \t]*QUESTION:[ \t]*(.+)$/im);
+  if (!m) return '';
+  const q = m[1].trim().replace(/^["']|["']$/g, '').trim();
+  return /^(none|n\/?a|no)\b/i.test(q) ? '' : q;
+}
 
 // ---------------------------------------------------------------------------
 // IPC: image picking — allows multiple files; returns an array of base64 images
@@ -337,6 +383,17 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
 
     const observations = `${obs1.text}\n\nCloser look — narrowing details:\n${obs2.text}`;
 
+    // --- Optional: let the model ask the user one clarifying question -----
+    const pendingQ = parseQuestion(obs2.text);
+    let answerNote = '';
+    if (pendingQ) {
+      send('analyze:note', 'The bot has a question for you…');
+      const userAnswer = await askUser(send, pendingQ);
+      answerNote = userAnswer
+        ? `\n\nThe analyst asked the user: "${pendingQ}"\nThe user answered: ${userAnswer}\nTake this into account.`
+        : `\n\nThe analyst asked the user: "${pendingQ}" but the user chose not to answer — proceed using the visual evidence alone.`;
+    }
+
     // --- Web search (app-side; local models can't browse) ----------------
     let webContext = '';
     const geoHits = []; // geocoded candidates collected during search (fallback pin)
@@ -383,6 +440,7 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
         role: 'user',
         content:
           `A vision analyst examined ${photoWord} of one location and reported:\n\n${observations}` +
+          answerNote +
           (webContext
             ? `\n\nWeb search results gathered from those clues (use them to verify and pin the location; ignore irrelevant hits):\n\n${webContext}`
             : '') +
@@ -423,17 +481,28 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
         try {
           const hit = await geocodeBest(c.place);
           if (hit) {
-            lat = hit.lat;
-            lng = hit.lng;
-            label = hit.name;
-            source = 'osm';
-            rank = hit.rank || 0;
+            // Trust the geocode only if it lands near the model's OWN estimate
+            // for this candidate. A vague place string ("Suburbia…") can match a
+            // same-named spot on the other side of the planet; the gate rejects
+            // those (e.g. a Canberra guess geocoding to Culiacán, Mexico).
+            const modelPt =
+              Number.isFinite(c.lat) && Number.isFinite(c.lng) ? { lat: c.lat, lng: c.lng } : null;
+            if (!modelPt || haversineKm(hit, modelPt) < GEOCODE_TRUST_KM) {
+              lat = hit.lat;
+              lng = hit.lng;
+              label = hit.name;
+              source = 'osm';
+              rank = hit.rank || 0;
+            }
           }
         } catch {
           /* keep the model's own coordinates */
         }
       }
       if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+      // Drop an alternative that still ended up implausibly far from the best
+      // guess — alternatives for one photo shouldn't be on another continent.
+      if (candidates.length && haversineKm({ lat, lng }, candidates[0]) > ALT_MAX_KM) continue;
       // Dedup: skip a candidate that lands almost on top of one we already have
       // (otherwise vague alternatives all collapse to the same city centroid).
       if (candidates.some((p) => haversineKm(p, { lat, lng }) < 1.2)) continue;
