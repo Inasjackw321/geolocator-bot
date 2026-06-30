@@ -106,7 +106,7 @@ const VISION_NARROW_PROMPT = `Now look again at the photo(s) even more closely, 
 - Unique architectural, signage, or streetscape details that could be matched to a specific place.
 List the concrete specifics you find. If something is partially legible, give your best reading and say it's uncertain. Still do not give the final answer.
 
-If — and only if — a SINGLE piece of information from the user would substantially improve the LOCATION guess (only ask about the location — e.g. "Is this your home area or somewhere you visited?", "Which country or region do you think this is in?", "Roughly what year was this taken?"), output one line starting with "QUESTION:" containing that one short question. Ask only about placing the photo, nothing else, and only when it would really help; otherwise output "QUESTION: none". Never ask more than one question.
+ALWAYS output one line starting with "QUESTION:" containing the single most useful question to ask the user about WHERE this photo was taken — pick the one whose answer would most help you place it (e.g. "Is this your home area or somewhere you travelled to?", "Which country or region do you believe this is in?", "Roughly what year was this taken?", "Do you know the name of the street or building?"). Ask only about placing the photo, and ask exactly one short question. The user can choose to skip it, so always provide a question. Only write "QUESTION: none" if you are already certain of the exact building or street address.
 
 At the very end, output a line starting with "SEARCHES:" followed by up to 5 web-search queries (one per line) that would best help identify the exact place. PRIORITISE the names of businesses, shops, restaurants, hotels, or brands visible on signs — each combined with your best guess of the city, region, or country (e.g. "Joe's Pizza Lyon France", "Hotel Splendide Bordeaux"). Also include street name + city, and any landmark names. Make each query specific and self-contained (don't rely on the others). If nothing is worth searching, write "SEARCHES: none".`;
 
@@ -137,7 +137,8 @@ List your committed best guess FIRST, and make that first line as specific as th
 
 // Step 3 (reasoning): initial deduction from the observations, with candidates.
 const DEDUCE_PROMPT =
-  'Reason step by step from these observations toward a location. Give your current best country → region → city, and list 2–4 candidate specific locations (district/street/landmark) with the concrete evidence for and against each. Do not finalise yet — this is your working deduction.';
+  'Reason step by step from these observations toward a location. Give your current best country → region → city, and list 2–4 candidate specific locations (district/street/landmark) with the concrete evidence for and against each. Do not finalise yet — this is your working deduction.\n\n' +
+  'Then, to raise your certainty, output up to 4 lines starting with "VERIFY:" — specific web-search queries (one per line) that would best CONFIRM or rule out your top candidates: the exact landmark, street or business combined with the city and country (e.g. "Pothonggang Park Pyongyang", "Rue Saint-Denis 12 Montréal"). The app will run these searches and give you the results before you commit, so choose queries whose answers would most change your confidence. If nothing is worth checking, write "VERIFY: none".';
 
 // Step 4 (reasoning): commit to the single most specific defensible location.
 const FINAL_PROMPT =
@@ -462,9 +463,10 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     highlightNote;
 
   // Pipeline: vision observe → vision narrow → [web search] → reason deduce →
-  // reason commit. The web-search step is skipped when disabled in Settings.
+  // [verify search] → reason commit. The two web-search steps are skipped when
+  // search is disabled in Settings.
   const webEnabled = settings.webSearch !== false;
-  const total = webEnabled ? 5 : 4;
+  const total = webEnabled ? 6 : 4;
   let pass = 0;
   let lastUsage = null;
 
@@ -517,43 +519,12 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
         : `\n\nThe analyst asked the user: "${pendingQ}" but the user chose not to answer — proceed using the visual evidence alone.`;
     }
 
-    // --- Web search (app-side; local models can't browse) ----------------
+    // --- Web search round 1: clues the vision model read ----------------
     let webContext = '';
     const geoHits = []; // geocoded candidates collected during search (fallback pin)
     if (webEnabled) {
       send('analyze:pass', { pass: ++pass, total, label: 'Searching the web for clues' });
-      const queries = parseSearches(obs2.text);
-      if (queries.length === 0) {
-        send('analyze:search', { empty: true });
-      } else {
-        const blocks = [];
-        for (const q of queries) {
-          // Show the query immediately (spinner), then replace with its results.
-          send('analyze:search', { query: q, pending: true });
-          let r;
-          try {
-            r = await searchQuery(q);
-          } catch {
-            r = { query: q, places: [], web: [] };
-          }
-          for (const pl of r.places) geoHits.push({ ...pl, query: q });
-          send('analyze:search', {
-            query: q,
-            places: r.places.map((pl) => ({ name: pl.name, lat: pl.lat, lng: pl.lng })),
-            web: r.web,
-          });
-          let b = `Query: "${q}"\n`;
-          for (const pl of r.places) {
-            b += `- Map match: ${pl.name} (${pl.lat.toFixed(4)}, ${pl.lng.toFixed(4)})\n`;
-          }
-          for (const w of r.web) b += `- ${w}\n`;
-          if (!r.places.length && !r.web.length) b += '- (no results)\n';
-          b += '\n';
-          blocks.push(b);
-          await sleep(600); // be polite to the free endpoints
-        }
-        webContext = blocks.join('');
-      }
+      webContext = await runSearchRound(parseSearches(obs2.text), send, geoHits);
     }
 
     // --- Reasoning: initial deduction (text-only) ------------------------
@@ -576,8 +547,22 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     if (!deduce.ok) return { ok: false, error: deduce.error };
     reasonMessages.push({ role: 'assistant', content: deduce.text });
 
+    // --- Web search round 2: verify the deduced candidates --------------
+    // A second, targeted search of the model's OWN top candidates — this is what
+    // raises certainty: the commit step sees fresh confirmation (or contradiction)
+    // for the exact places it's considering, not just the original clue search.
+    let verifyContext = '';
+    if (webEnabled) {
+      send('analyze:pass', { pass: ++pass, total, label: 'Verifying the location' });
+      verifyContext = await runSearchRound(parseVerify(deduce.text), send, geoHits);
+    }
+
     // --- Reasoning: commit to the most specific location -----------------
-    reasonMessages.push({ role: 'user', content: FINAL_PROMPT });
+    const commitContent =
+      (verifyContext
+        ? `Fresh web-search results gathered to CONFIRM your candidate locations (use them to verify your answer, correct it if they contradict you, or sharpen the exact place; ignore irrelevant hits):\n\n${verifyContext}\n\n`
+        : '') + FINAL_PROMPT;
+    reasonMessages.push({ role: 'user', content: commitContent });
     const final = await step('Final location', {
       model: reasoningModel, messages: reasonMessages, maxTokens: 2000, final: true,
     });
@@ -675,12 +660,11 @@ async function resolveCandidates(finalText, { webEnabled, geoHits = [], note } =
     candidates.push({ lat, lng, label, place: c.place, reason: c.reason, source, rank, primary: candidates.length === 0 });
   }
 
-  // Verify the best guess when it's only a coarse match: search its own place
-  // string and refine the pin if a more precise hit for the SAME place is near.
+  // Always double-check the best guess with one more search of its own place
+  // string, and refine the pin if a more precise hit for the SAME place is near.
   if (webEnabled && candidates.length) {
     const primary = candidates[0];
-    const coarse = primary.source !== 'osm' || (primary.rank || 0) < 24;
-    if (coarse && primary.place) {
+    if (primary.place) {
       tell(`Double-checking the exact spot for: ${primary.place}…`);
       try {
         const r = await searchQuery(primary.place);
@@ -1031,23 +1015,78 @@ function stripHtml(s) {
     .trim();
 }
 
-// Pull the "SEARCHES:" query list the vision step is asked to emit.
-function parseSearches(text) {
-  const m = String(text || '').match(/^[ \t]*SEARCHES:[ \t]*(.*)$/im);
+// Pull a labelled query list ("SEARCHES:" / "VERIFY:") the model is asked to
+// emit — the header line plus the consecutive query lines after it.
+function parseQueryList(text, keyword, max) {
+  const re = new RegExp(`^[ \\t]*${keyword}:[ \\t]*(.*)$`, 'im');
+  const m = String(text || '').match(re);
   if (!m) return [];
-  const start = text.indexOf(m[0]);
-  const tail = text.slice(start + m[0].length);
-  const lines = (m[1] + '\n' + tail).split('\n');
+  const start = text.indexOf(m[0]) + m[0].length;
+  const lines = ((m[1] || '') + '\n' + text.slice(start)).split('\n');
   const out = [];
+  let started = false;
   for (const raw of lines) {
     const line = raw.trim();
-    if (!line) continue;
-    if (/^none$/i.test(line)) break;
-    const q = line.replace(/^[-*\d.)\s]+/, '').replace(/^["']|["']$/g, '').trim();
-    if (q) out.push(q);
-    if (out.length >= 5) break;
+    if (!line) {
+      if (started) break; // blank line ends the consecutive query block
+      continue;
+    }
+    if (/^none\b/i.test(line)) break;
+    // Stop if we've reached another labelled section or a heading.
+    if (started && /^(SEARCHES|VERIFY|CANDIDATES|QUESTION|#)/i.test(line)) break;
+    if (line.startsWith('```')) continue;
+    const q = line.replace(/^[-*•\d.)\s]+/, '').replace(/^["']|["']$/g, '').trim();
+    if (q) {
+      out.push(q);
+      started = true;
+    }
+    if (out.length >= (max || 5)) break;
   }
   return out;
+}
+
+// The vision step's clue searches, and the reasoning step's verification searches.
+function parseSearches(text) {
+  return parseQueryList(text, 'SEARCHES', 5);
+}
+function parseVerify(text) {
+  return parseQueryList(text, 'VERIFY', 4);
+}
+
+// Run a round of web searches, streaming each query + its results to the UI and
+// collecting geocoded hits. Returns a text block of the results for the model.
+async function runSearchRound(queries, send, geoHits) {
+  if (!queries || !queries.length) {
+    send('analyze:search', { empty: true });
+    return '';
+  }
+  const blocks = [];
+  for (const q of queries) {
+    // Show the query immediately (spinner), then replace with its results.
+    send('analyze:search', { query: q, pending: true });
+    let r;
+    try {
+      r = await searchQuery(q);
+    } catch {
+      r = { query: q, places: [], web: [] };
+    }
+    for (const pl of r.places) geoHits.push({ ...pl, query: q });
+    send('analyze:search', {
+      query: q,
+      places: r.places.map((pl) => ({ name: pl.name, lat: pl.lat, lng: pl.lng })),
+      web: r.web,
+    });
+    let b = `Query: "${q}"\n`;
+    for (const pl of r.places) {
+      b += `- Map match: ${pl.name} (${pl.lat.toFixed(4)}, ${pl.lng.toFixed(4)})\n`;
+    }
+    for (const w of r.web) b += `- ${w}\n`;
+    if (!r.places.length && !r.web.length) b += '- (no results)\n';
+    b += '\n';
+    blocks.push(b);
+    await sleep(600); // be polite to the free endpoints
+  }
+  return blocks.join('');
 }
 
 // Two free geocoders for better coverage of streets & businesses. Each result

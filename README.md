@@ -40,20 +40,25 @@ opens straight away. First launch, click **⚙ Settings**, paste your
   small details it would otherwise miss.
 - **Animated, polished UI** — live progress bar across the steps, smooth reveals,
   and a spinner while it works.
-- **4-stage narrowing pipeline** — **GLM-4.5V** (vision) first observes all the
-  photos broadly (text/language, architecture, nature/climate, roads, vehicles &
-  brands, landmarks/sun), then takes a **closer look** hunting for the specifics
-  that pin a city/district/street (exact signage, house numbers, plate codes,
-  chains). Then **GLM-5.2** (reasoning) makes an **initial deduction** with
-  candidates and finally **commits** to the single most specific location.
-  (GLM-5.2 is text-only, so it reasons over the descriptions, not the images.)
-- **Web search for clues** — the app looks up the signs, business names, streets
-  and landmarks the model reads, using **OpenStreetMap** (geocoding addresses to
-  coordinates), **Wikipedia**, and **DuckDuckGo** — all free, no API key. This
-  works even with local models (the app does the searching, then feeds the results
-  to the reasoning step). Toggle it off in Settings; only the extracted *text* is
-  searched, never your photos.
-- **Streamed analysis** — each step appears live, with a "Step X/5" progress
+- **Narrowing pipeline with two search rounds** — **GLM-4.5V** (vision) first
+  observes all the photos broadly (text/language, architecture, nature/climate,
+  roads, vehicles & brands, landmarks/sun), then takes a **closer look** hunting
+  for the specifics that pin a city/district/street (exact signage, house numbers,
+  plate codes, chains). The app then **searches the web** for those clues. Then
+  **GLM-5.2** (reasoning) makes an **initial deduction** with candidates *and lists
+  the searches that would confirm them* — the app runs that **second, verification
+  search** so the model sees fresh evidence for its own top candidates before it
+  **commits** to the single most specific location. (GLM-5.2 is text-only, so it
+  reasons over the descriptions, not the images.)
+- **Web search for clues + verification** — the app looks up the signs, business
+  names, streets and landmarks the model reads, using **OpenStreetMap** (geocoding
+  addresses to coordinates), **Wikipedia**, and **DuckDuckGo** — all free, no API
+  key — in **two rounds**: once on the clues it reads, and again to *confirm* its
+  shortlisted candidates, plus a final geocode check on the committed best guess.
+  This works even with local models (the app does the searching, then feeds the
+  results to the reasoning step). Toggle it off in Settings; only the extracted
+  *text* is searched, never your photos.
+- **Streamed analysis** — each step appears live, with a "Step X/6" progress
   indicator
 - **Multiple ranked pins** — the model lists its **best guess first**, then up to
   three alternative locations worth showing. The app drops a **numbered pin per
@@ -66,11 +71,11 @@ opens straight away. First launch, click **⚙ Settings**, paste your
   output collapsible. Web searches appear as their own cards with the query and its
   map/web hits, so you can watch exactly what it's looking up. The map uses a clean
   **dark CARTO basemap** with crisp numbered pins.
-- **It can ask you a location question (you can deny)** — if a single piece of info
-  about *where* the photo was taken would genuinely sharpen the guess (e.g. "Is this
-  your home area or somewhere you visited?", "Which country do you think this is
-  in?"), the bot pops up **one** question mid-analysis. Answer it to steer the
-  result, or hit **Skip** to carry on with the visual evidence alone — your call.
+- **It asks you a location question (you can deny)** — mid-analysis the bot pops up
+  **one** question about *where* the photo was taken (e.g. "Is this your home area or
+  somewhere you visited?", "Which country do you think this is in?") and waits. Type
+  an answer to steer the result, or hit **Skip** to carry on with the visual evidence
+  alone — your call, but it always gives you the chance.
 - **Keep chatting to refine it** — after the first answer, a **follow-up chat** opens
   under the map. Add a clue ("it's near a river") or ask it to narrow further ("can
   you get the street?") and it continues the same conversation — updating the pins
@@ -159,16 +164,18 @@ renderer (UI)  ──IPC──▶  main process  ──HTTPS──▶  HF Infere
 - The **main process** holds the token and POSTs to the HF router (OpenAI-compatible
   Chat Completions), parsing the streamed SSE response and forwarding text deltas to
   the UI. No SDK — just native `fetch`, so the app has **no runtime dependencies**.
-- **Four-step flow:** (1) the **vision** model (`zai-org/GLM-4.5V`) gets all the
-  photos + the six observation topics and describes them; (2) it looks again,
-  prompted to extract the most location-specific details; (3) the **reasoning**
-  model (`zai-org/GLM-5.2`) deduces candidate locations from that text (no images);
-  (4) it commits to the most specific spot and emits the final structured report
-  plus a machine-readable `CANDIDATES:` block — best guess first, then up to three
-  alternatives, each `place | lat, lng | reason`. The app parses that block,
-  geocodes each place, and drops a numbered pin per candidate on a bundled
-  **Leaflet + OpenStreetMap** map. Any `<think>` reasoning and the raw `CANDIDATES`
-  lines are hidden from the displayed answer.
+- **Flow:** (1) the **vision** model (`zai-org/GLM-4.5V`) gets all the photos + the
+  six observation topics and describes them; (2) it looks again, extracting the most
+  location-specific details and one **question for you** about where it was taken;
+  (3) the app **searches the web** for the clues it read; (4) the **reasoning** model
+  (`zai-org/GLM-5.2`) deduces candidate locations from that text (no images) and
+  lists **verification searches**; (5) the app runs those searches to confirm the
+  shortlist; (6) the model commits to the most specific spot and emits the final
+  structured report plus a machine-readable `CANDIDATES:` block — best guess first,
+  then up to three alternatives, each `place | lat, lng | reason`. The app parses
+  that block, geocodes each place, and drops a numbered pin per candidate on a
+  bundled **Leaflet + OpenStreetMap** map. Any `<think>` reasoning and the raw
+  `CANDIDATES` lines are hidden from the displayed answer.
 - **Rate-limit handling:** on a `429`/`5xx` the app honors the server's
   `Retry-After` header (or backs off 3→6→12→24→48s, up to 5 retries) and shows a
   "waiting Ns" status. If you keep getting limited, wait a minute or add credits at

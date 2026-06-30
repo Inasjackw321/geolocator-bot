@@ -1028,7 +1028,7 @@ async function runAnalysis() {
     startStep({
       label: info.label || (info.final ? 'Writing the report' : 'Working…'),
       sub: info.model ? shortModelName(info.model) : '',
-      kind: info.final ? 'final' : /search/i.test(info.label || '') ? 'search' : 'model',
+      kind: info.final ? 'final' : /search|verif/i.test(info.label || '') ? 'search' : 'model',
     });
 
     if (info.final) {
