@@ -55,6 +55,22 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('chat:located', handler);
     return () => ipcRenderer.removeListener('chat:located', handler);
   },
+  onChatThink: (cb) => {
+    const handler = (_evt, info) => cb(info);
+    ipcRenderer.on('chat:think', handler);
+    return () => ipcRenderer.removeListener('chat:think', handler);
+  },
+  onChatThinkDelta: (cb) => {
+    const handler = (_evt, text) => cb(text);
+    ipcRenderer.on('chat:thinkDelta', handler);
+    return () => ipcRenderer.removeListener('chat:thinkDelta', handler);
+  },
+  onChatSearch: (cb) => {
+    const handler = (_evt, info) => cb(info);
+    ipcRenderer.on('chat:search', handler);
+    return () => ipcRenderer.removeListener('chat:search', handler);
+  },
+  revertChat: (index) => ipcRenderer.invoke('chat:revert', { index }),
 
   // Sessions / history + reset
   resetSession: () => ipcRenderer.invoke('session:reset'),

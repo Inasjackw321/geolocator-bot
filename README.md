@@ -38,8 +38,12 @@ opens straight away. First launch, click **⚙ Settings**, paste your
   license plates, shopfronts, or landmarks. Each box is cropped at full resolution
   and sent to the AI as a zoomed-in close-up with a "look here" note, so it can read
   small details it would otherwise miss.
-- **Animated, polished UI** — live progress bar across the steps, smooth reveals,
-  and a spinner while it works.
+- **Animated, polished UI** — smooth reveals, subtle depth/shadows, and a spinner
+  while it works.
+- **Estimated-time progress bar** — instead of jumping in big steps, the bar creeps
+  forward continuously and shows a live **"~Ns left"** readout. It learns from your
+  own past runs (stored on your machine) so the estimate gets more accurate on this
+  model/connection the more you use it.
 - **Narrowing pipeline with two search rounds** — **GLM-4.5V** (vision) first
   observes all the photos broadly (text/language, architecture, nature/climate,
   roads, vehicles & brands, landmarks/sun), then takes a **closer look** hunting
@@ -60,12 +64,14 @@ opens straight away. First launch, click **⚙ Settings**, paste your
   *text* is searched, never your photos.
 - **Streamed analysis** — each step appears live, with a "Step X/6" progress
   indicator
-- **Multiple ranked pins** — the model lists its **best guess first**, then up to
-  three alternative locations worth showing. The app drops a **numbered pin per
-  candidate**, with the best guess shown as a larger, pulsing primary pin (and the
-  alternatives dimmed). The map **auto-fits to all the pins**, and a clean
-  **candidate list** beneath it animates in — click any row to fly the map to that
-  pin and open its popup.
+- **A bigger, better map** — the map is large by default, with a **⤢ expand** button
+  that opens it as a distraction-free, near-fullscreen view (Esc or click outside to
+  close), a **⌖ recenter** button to re-fit all pins after panning around, and a
+  scale bar. Multiple ranked pins: the model lists its **best guess first**, then up
+  to three alternatives; the app drops a **numbered pin per candidate**, with the
+  best guess as a larger, pulsing primary pin. A clean **candidate list** beneath it
+  animates in — click any row to fly there, or its own ↗ to open that option in
+  Google Maps.
 - **Live activity timeline** — instead of dumping raw text, the analysis shows as a
   tidy **step-by-step timeline** (spinner → ✓ for each stage), with each step's
   output collapsible. Web searches appear as their own cards with the query and its
@@ -76,10 +82,15 @@ opens straight away. First launch, click **⚙ Settings**, paste your
   somewhere you visited?", "Which country do you think this is in?") and waits. Type
   an answer to steer the result, or hit **Skip** to carry on with the visual evidence
   alone — your call, but it always gives you the chance.
-- **Keep chatting to refine it** — after the first answer, a **follow-up chat** opens
-  under the map. Add a clue ("it's near a river") or ask it to narrow further ("can
-  you get the street?") and it continues the same conversation — updating the pins
-  whenever its guess changes.
+- **Keep chatting to refine it, with real thinking behind each reply** — after the
+  first answer, a **follow-up chat** opens under the map. Add a clue ("it's near a
+  river") or ask it to narrow further, and each reply goes through two passes: a
+  visible **🤔 "Thinking it through"** step first (which searches the web again if
+  your message would benefit from checking something online), then the actual
+  reply — so corrections are grounded in fresh evidence, not just taken on faith.
+  Every assistant reply also has a **↺ "go back"** button — click it to discard the
+  turns after that point and try a different follow-up instead, if a refinement
+  went the wrong way.
 - **Saved chats** — every analysis is **saved automatically**. Open **🕑 History** to
   revisit any past chat: its report, map pins and the full conversation come back,
   and you can pick up refining right where you left off. **Clear** wipes the screen

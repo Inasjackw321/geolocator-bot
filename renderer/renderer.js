@@ -11,6 +11,9 @@ const clearBtn = document.getElementById('clear-btn');
 const leftStatus = document.getElementById('left-status');
 const progressEl = document.getElementById('progress');
 const progressBar = document.getElementById('progress-bar');
+const progressMetaEl = document.getElementById('progress-meta');
+const progressEtaEl = document.getElementById('progress-eta');
+const progressPercentEl = document.getElementById('progress-percent');
 
 const editorModal = document.getElementById('editor-modal');
 const editorImg = document.getElementById('editor-img');
@@ -56,8 +59,11 @@ const presetOllama = document.getElementById('preset-ollama');
 const webSearchInput = document.getElementById('web-search');
 
 const mapWrap = document.getElementById('map-wrap');
+const mapBackdrop = document.getElementById('map-backdrop');
 const mapLabel = document.getElementById('map-label');
 const mapLink = document.getElementById('map-link');
+const mapRecenterBtn = document.getElementById('map-recenter');
+const mapExpandBtn = document.getElementById('map-expand');
 const candidatesEl = document.getElementById('candidates');
 
 // --- State ------------------------------------------------------------------
@@ -66,11 +72,13 @@ const MAX_IMAGES = 8;
 let busy = false;
 let chatBusy = false;
 let currentSessionId = null; // set when an analysis completes or a chat is opened
+let chatTurnIndex = 0; // mirrors sess.chat's length on the main side, for revert
 
 // --- Map (Leaflet, bundled locally) -----------------------------------------
 let map = null;
 let markerLayer = null; // L.layerGroup holding the current candidate pins
 let markerRefs = []; // parallel to the rendered candidates, for list ↔ map sync
+let lastCandidates = []; // the candidates currently shown, for recenter/expand
 
 // Tell Leaflet where its bundled marker images live.
 if (window.L) {
@@ -105,12 +113,48 @@ function ensureMap() {
     }).addTo(map);
   });
   carto.addTo(map);
+  L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(map);
   return map;
 }
 
 function hideMap() {
   mapWrap.classList.add('hidden');
+  if (mapWrap.classList.contains('expanded')) toggleMapExpanded(false);
 }
+
+// Fit the map's view to a set of candidate points — used both when pins first
+// drop and by the "recenter" button after the user has panned/zoomed around.
+function fitMapToCandidates(cands) {
+  if (!map || !cands || !cands.length) return;
+  const pts = cands.map((c) => [c.lat, c.lng]);
+  const primary = cands[0];
+  if (pts.length === 1) {
+    map.setView(pts[0], primary.source === 'osm' ? 14 : 5);
+  } else {
+    map.fitBounds(pts, { padding: [42, 42], maxZoom: 14 });
+  }
+}
+
+// Toggle a distraction-free, much larger view of the map (a lightbox-style
+// overlay) — closes on Escape or clicking the backdrop.
+function toggleMapExpanded(force) {
+  const expand = typeof force === 'boolean' ? force : !mapWrap.classList.contains('expanded');
+  mapWrap.classList.toggle('expanded', expand);
+  mapBackdrop.classList.toggle('hidden', !expand);
+  mapExpandBtn.textContent = expand ? '⤡' : '⤢';
+  mapExpandBtn.title = expand ? 'Collapse map' : 'Expand map';
+  // The container just resized (CSS transition) — Leaflet must recompute size.
+  setTimeout(() => {
+    if (map) map.invalidateSize();
+  }, 220);
+}
+
+mapExpandBtn.addEventListener('click', () => toggleMapExpanded());
+mapBackdrop.addEventListener('click', () => toggleMapExpanded(false));
+mapRecenterBtn.addEventListener('click', () => fitMapToCandidates(lastCandidates));
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && mapWrap.classList.contains('expanded')) toggleMapExpanded(false);
+});
 
 function escapeHtml(s) {
   return String(s == null ? '' : s)
@@ -159,7 +203,6 @@ function showLocations(candidates) {
   markerLayer = L.layerGroup().addTo(m);
   markerRefs = [];
 
-  const pts = [];
   let primaryMarker = null;
   cands.forEach((cand, i) => {
     const mk = L.marker([cand.lat, cand.lng], {
@@ -175,16 +218,12 @@ function showLocations(candidates) {
     mk.bindPopup(`<div class="map-popup">${tag}<div class="popup-title">${title}</div>${reason}</div>`);
 
     markerRefs.push(mk);
-    pts.push([cand.lat, cand.lng]);
     if (cand.primary || i === 0) primaryMarker = mk;
   });
 
   const primary = cands[0];
-  if (pts.length === 1) {
-    m.setView(pts[0], primary.source === 'osm' ? 14 : 5);
-  } else {
-    m.fitBounds(pts, { padding: [42, 42], maxZoom: 14 });
-  }
+  lastCandidates = cands;
+  fitMapToCandidates(cands);
   if (primaryMarker) primaryMarker.openPopup();
 
   mapLabel.textContent =
@@ -259,6 +298,57 @@ function flyToCandidate(cand) {
   else map.setView([cand.lat, cand.lng], z);
 }
 
+// --- Estimated-time progress bar ---------------------------------------------
+// The bar's fill blends two signals: which discrete step we're on (so it always
+// visibly advances at each step boundary) and elapsed-time vs. an estimate (so
+// it also creeps forward smoothly between boundaries, like a real progress bar
+// instead of jumping in big steps). Per-step durations are learned from past
+// runs (localStorage), so the ETA gets more accurate the more you use the app.
+const ETA_STORAGE_KEY = 'geolink.stepDurations.v1';
+
+function loadStepDurations() {
+  try {
+    const v = JSON.parse(localStorage.getItem(ETA_STORAGE_KEY));
+    return v && typeof v === 'object' ? v : {};
+  } catch {
+    return {};
+  }
+}
+let stepDurations = loadStepDurations();
+
+// Fallback estimates (seconds) before any history exists, indexed by total-step
+// count: [examine, closer look, (search clues), reason, (verify), final].
+const DEFAULT_STEP_SECONDS = {
+  4: [11, 9, 9, 13],
+  6: [11, 9, 6, 9, 6, 13],
+};
+
+function estimateStepSeconds(pass, total) {
+  const rec = stepDurations[`${total}|${pass}`];
+  if (rec && rec.avg) return rec.avg;
+  const arr = DEFAULT_STEP_SECONDS[total] || DEFAULT_STEP_SECONDS[6];
+  return arr[pass - 1] || 10;
+}
+
+function estimateTotalSeconds(total) {
+  let sum = 0;
+  for (let p = 1; p <= total; p++) sum += estimateStepSeconds(p, total);
+  return sum;
+}
+
+// Exponential moving average so estimates adapt to this machine/model's real
+// speed over repeated uses without being thrown off by one slow/fast outlier.
+function recordStepSeconds(pass, total, seconds) {
+  const key = `${total}|${pass}`;
+  const rec = stepDurations[key];
+  stepDurations[key] = rec ? { avg: rec.avg * 0.7 + seconds * 0.3, n: rec.n + 1 } : { avg: seconds, n: 1 };
+  try {
+    localStorage.setItem(ETA_STORAGE_KEY, JSON.stringify(stepDurations));
+  } catch {
+    /* private mode / quota — the ETA just won't persist across runs */
+  }
+}
+
 // --- Activity timeline ------------------------------------------------------
 // A live "Analysing" panel: one row per pipeline step (spinner → check), each
 // with an expandable body that streams the step's text or its web-search cards.
@@ -328,21 +418,20 @@ function stepAppendText(text) {
   activityEl.scrollTop = activityEl.scrollHeight;
 }
 
-// Render a web-search result card into the current (search) step.
-function stepAddSearch(info) {
-  if (!currentStep) return;
-  const body = currentStep._body;
-
+// Render/update a single web-search result card inside `container` — shared by
+// the analysis timeline's search steps and the follow-up chat's "thinking"
+// block, so both look and behave identically.
+function renderSearchCard(container, info) {
   if (info.empty) {
     const e = document.createElement('div');
     e.className = 'search-empty';
-    e.textContent = 'No specific search terms were found in the photos — skipping web search.';
-    body.appendChild(e);
+    e.textContent = 'No specific search terms were found — skipping web search.';
+    container.appendChild(e);
     return;
   }
 
   // A "pending" event creates the card with a spinner; the result event fills it.
-  let card = body.querySelector(`[data-q="${cssEscape(info.query)}"]`);
+  let card = container.querySelector(`[data-q="${cssEscape(info.query)}"]`);
   if (!card) {
     card = document.createElement('div');
     card.className = 'search-card';
@@ -350,8 +439,7 @@ function stepAddSearch(info) {
     card.innerHTML =
       `<div class="search-q"><span class="search-ico">🔍</span><span>${escapeHtml(info.query)}</span>` +
       '<span class="search-spin"></span></div><div class="search-results"></div>';
-    body.appendChild(card);
-    activityEl.scrollTop = activityEl.scrollHeight;
+    container.appendChild(card);
   }
   if (info.pending) return;
 
@@ -377,6 +465,13 @@ function stepAddSearch(info) {
     row.innerHTML = `<span class="hit-ico">🔗</span><span class="hit-text">${escapeHtml(w)}</span>`;
     results.appendChild(row);
   }
+}
+
+// Render a web-search result card into the current activity step.
+function stepAddSearch(info) {
+  if (!currentStep) return;
+  renderSearchCard(currentStep._body, info);
+  activityEl.scrollTop = activityEl.scrollHeight;
 }
 
 // Minimal CSS attribute-selector escaper for the query string.
@@ -943,6 +1038,7 @@ function resetAll() {
   chatLog.innerHTML = '';
   chatInput.value = '';
   currentSessionId = null;
+  chatTurnIndex = 0;
   leftStatus.style.color = '';
   leftStatus.textContent = '';
   // Tell main to forget the conversation so the AI is fresh and memory is freed.
@@ -977,6 +1073,7 @@ async function runAnalysis() {
   chatEl.classList.add('hidden');
   chatLog.innerHTML = '';
   currentSessionId = null;
+  chatTurnIndex = 0;
   // The structured report appears only once we reach the final step; until then
   // the activity timeline carries the progress.
   resultEl.classList.add('hidden');
@@ -988,6 +1085,51 @@ async function runAnalysis() {
   progressEl.classList.remove('hidden');
   progressEl.classList.add('indeterminate');
   progressBar.style.width = '';
+  progressMetaEl.classList.add('hidden');
+  progressEtaEl.textContent = 'Estimating…';
+  progressPercentEl.textContent = '0%';
+
+  // Per-run ETA state: blends discrete step progress with elapsed-vs-estimated
+  // time so the bar creeps forward smoothly, not just in big jumps per step.
+  let etaTimer = null;
+  let runStartedAt = 0;
+  let estimatedTotalMs = 0;
+  let curStepPass = 0;
+  let curStepTotal = 0;
+  let curStepStartedAt = 0;
+
+  function updateEtaUi() {
+    const elapsed = Date.now() - runStartedAt;
+    const stepFraction = curStepTotal ? (curStepPass - 1) / curStepTotal : 0;
+    const timeFraction = estimatedTotalMs > 0 ? Math.min(0.97, elapsed / estimatedTotalMs) : 0;
+    const pct = Math.round(Math.max(stepFraction, timeFraction) * 100);
+    progressBar.style.width = `${pct}%`;
+    progressPercentEl.textContent = `${pct}%`;
+    const remainingMs = estimatedTotalMs - elapsed;
+    if (remainingMs > 1500) {
+      progressEtaEl.textContent = `~${Math.ceil(remainingMs / 1000)}s left`;
+    } else if (elapsed < estimatedTotalMs + 15000) {
+      progressEtaEl.textContent = 'almost there…';
+    } else {
+      progressEtaEl.textContent = 'taking longer than usual…';
+    }
+  }
+
+  function startEtaTimer(total) {
+    if (etaTimer) clearInterval(etaTimer);
+    runStartedAt = Date.now();
+    estimatedTotalMs = estimateTotalSeconds(total) * 1000;
+    progressMetaEl.classList.remove('hidden');
+    etaTimer = setInterval(updateEtaUi, 250);
+    updateEtaUi();
+  }
+
+  function stopEtaTimer() {
+    if (etaTimer) {
+      clearInterval(etaTimer);
+      etaTimer = null;
+    }
+  }
 
   // Build high-res crops of any highlighted regions to send to the AI.
   const highlights = await buildHighlightCrops();
@@ -1016,11 +1158,21 @@ async function runAnalysis() {
       activityStatusEl.className = 'activity-status warn';
       return;
     }
+    // Record the actual duration of whichever step just finished, so the ETA
+    // gets more accurate on future runs.
+    if (curStepPass && curStepTotal) {
+      const secs = (Date.now() - curStepStartedAt) / 1000;
+      if (secs > 0.2) recordStepSeconds(curStepPass, curStepTotal, secs);
+    }
     raw = '';
     curFinal = Boolean(info.final);
     if (info.total) {
       progressEl.classList.remove('indeterminate');
-      progressBar.style.width = `${Math.round((info.pass / info.total) * 100)}%`;
+      if (info.pass === 1) startEtaTimer(info.total);
+      curStepPass = info.pass;
+      curStepTotal = info.total;
+      curStepStartedAt = Date.now();
+      updateEtaUi();
     }
     activityStatusEl.textContent = `Step ${info.pass} of ${info.total}`;
     activityStatusEl.className = 'activity-status';
@@ -1083,6 +1235,13 @@ async function runAnalysis() {
   offSearch();
   offQuestion();
   offLocated();
+  // The final step's duration is never recorded by offPass (it only fires at
+  // the START of each step), so record it here now that it's actually done.
+  if (curStepPass && curStepTotal) {
+    const secs = (Date.now() - curStepStartedAt) / 1000;
+    if (secs > 0.2) recordStepSeconds(curStepPass, curStepTotal, secs);
+  }
+  stopEtaTimer();
   finishStep(currentStep);
   currentStep = null;
   activityEl.classList.add('done');
@@ -1097,7 +1256,12 @@ async function runAnalysis() {
   // Finish and fade out the progress bar.
   progressEl.classList.remove('indeterminate');
   progressBar.style.width = '100%';
-  setTimeout(() => progressEl.classList.add('hidden'), 600);
+  progressPercentEl.textContent = '100%';
+  progressEtaEl.textContent = res.ok ? 'Done' : 'Stopped';
+  setTimeout(() => {
+    progressEl.classList.add('hidden');
+    progressMetaEl.classList.add('hidden');
+  }, 600);
 
   if (!res.ok) {
     activityStatusEl.textContent = res.error;
@@ -1167,9 +1331,15 @@ function openChat() {
   chatEl.classList.remove('hidden');
 }
 
+// Each bubble carries its position in the persisted sess.chat array (matching
+// order: user, assistant, user, assistant, …) so a "revert" click can tell the
+// main process exactly which turn to roll back to.
 function addChatBubble(role, text) {
   const wrap = document.createElement('div');
   wrap.className = `chat-msg ${role}`;
+  const idx = chatTurnIndex++;
+  wrap.dataset.chatIndex = String(idx);
+
   const bubble = document.createElement('div');
   bubble.className = 'chat-bubble';
   if (role === 'assistant') {
@@ -1178,14 +1348,100 @@ function addChatBubble(role, text) {
     bubble.textContent = text;
   }
   wrap.appendChild(bubble);
+
+  if (role === 'assistant') {
+    const revert = document.createElement('button');
+    revert.type = 'button';
+    revert.className = 'chat-revert';
+    revert.title = 'Go back to this point in the conversation';
+    revert.innerHTML = '↺';
+    revert.addEventListener('click', () => revertChatTo(idx));
+    wrap.appendChild(revert);
+  }
+
   chatLog.appendChild(wrap);
   chatLog.scrollTop = chatLog.scrollHeight;
   return bubble;
 }
 
+// "Go back" — discard every chat turn after this assistant reply, restoring
+// the map to whatever it showed at that point. Confirms first since it
+// permanently drops the later turns from the saved session.
+async function revertChatTo(idx) {
+  if (chatBusy || busy) return;
+  const laterCount = Array.from(chatLog.children).filter(
+    (n) => Number(n.dataset.chatIndex) > idx
+  ).length;
+  if (laterCount === 0) return; // already the latest turn — nothing to revert
+  const ok = window.confirm(
+    `Go back to this point? The ${laterCount} message${laterCount === 1 ? '' : 's'} after it will be removed.`
+  );
+  if (!ok) return;
+
+  let res;
+  try {
+    res = await window.api.revertChat(idx);
+  } catch (e) {
+    res = { ok: false, error: e.message || String(e) };
+  }
+  if (!res || !res.ok) return;
+
+  for (const n of Array.from(chatLog.children)) {
+    if (Number(n.dataset.chatIndex) > idx) n.remove();
+  }
+  chatTurnIndex = idx + 1;
+  if (res.candidates && res.candidates.length) showLocations(res.candidates);
+}
+
 function autoSizeChatInput() {
   chatInput.style.height = 'auto';
   chatInput.style.height = `${Math.min(120, chatInput.scrollHeight)}px`;
+}
+
+// A collapsible "🤔 Thinking" block shown above the reply — the visible half
+// of the refine feature's extra reasoning pass (see chat:think in main.js).
+function createThinkBlock() {
+  const el = document.createElement('div');
+  el.className = 'chat-think running';
+  el.innerHTML =
+    '<button type="button" class="think-head">' +
+    '<span class="think-icon"><span class="step-spinner"></span></span>' +
+    '<span class="think-title">Thinking it through…</span>' +
+    '<span class="think-chevron">⌄</span></button>' +
+    '<div class="think-body"></div>';
+  el.querySelector('.think-head').addEventListener('click', () => el.classList.toggle('collapsed'));
+  chatLog.appendChild(el);
+  chatLog.scrollTop = chatLog.scrollHeight;
+  return el;
+}
+
+function appendThinkText(block, text) {
+  if (!block) return;
+  const body = block.querySelector('.think-body');
+  let pre = body.querySelector('.step-stream');
+  if (!pre) {
+    pre = document.createElement('div');
+    pre.className = 'step-stream';
+    body.appendChild(pre);
+  }
+  pre.textContent += text;
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function addThinkSearch(block, info) {
+  if (!block) return;
+  renderSearchCard(block.querySelector('.think-body'), info);
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function finishThinkBlock(block, searched) {
+  if (!block) return;
+  block.classList.remove('running');
+  block.classList.add('done', 'collapsed');
+  const icon = block.querySelector('.think-icon');
+  if (icon) icon.innerHTML = '🤔';
+  const title = block.querySelector('.think-title');
+  if (title) title.textContent = searched ? 'Thought it through + checked online' : 'Thought it through';
 }
 
 async function sendFollowup() {
@@ -1200,12 +1456,22 @@ async function sendFollowup() {
   autoSizeChatInput();
   addChatBubble('user', msg);
 
-  let raw = '';
-  const bubble = addChatBubble('assistant', '');
-  bubble.innerHTML = '<p class="muted">Thinking…</p>';
+  // Pass 1 (visible): a short "thinking" block, with a live search card if the
+  // model decides checking something online would help. Pass 2 (below) is the
+  // real, persisted reply — created lazily once it actually starts streaming.
+  const think = createThinkBlock();
+  let bubble = null;
 
+  const offThink = window.api.onChatThink((info) => {
+    if (info.stage === 'done') finishThinkBlock(think, info.searched);
+  });
+  const offThinkDelta = window.api.onChatThinkDelta((d) => appendThinkText(think, d));
+  const offThinkSearch = window.api.onChatSearch((info) => addThinkSearch(think, info));
+
+  let raw = '';
   const offDelta = window.api.onChatDelta((d) => {
     raw += d;
+    if (!bubble) bubble = addChatBubble('assistant', '');
     bubble.innerHTML = renderMarkdown(cleanForDisplay(raw)) || '<p class="muted">…</p>';
     chatLog.scrollTop = chatLog.scrollHeight;
   });
@@ -1221,11 +1487,19 @@ async function sendFollowup() {
     res = { ok: false, error: e.message || String(e) };
   }
 
+  offThink();
+  offThinkDelta();
+  offThinkSearch();
   offDelta();
   offLocated();
+  // Safety net: the 'done' event normally finishes this already; only force it
+  // if something went wrong before that event arrived (e.g. no IPC response).
+  if (think.classList.contains('running')) finishThinkBlock(think, false);
   chatBusy = false;
   chatSend.classList.remove('loading');
   chatSend.disabled = false;
+
+  if (!bubble) bubble = addChatBubble('assistant', '');
 
   if (!res.ok) {
     bubble.innerHTML = `<p class="chat-error">${escapeHtml(res.error || 'Something went wrong.')}</p>`;
@@ -1333,6 +1607,7 @@ function restoreSession(s) {
   activityEl.classList.add('hidden');
   activityStepsEl.innerHTML = '';
   progressEl.classList.add('hidden');
+  progressMetaEl.classList.add('hidden');
   resultEl.classList.remove('hidden');
   resultEl.innerHTML = renderMarkdown(cleanForDisplay(s.reportText || ''));
   usageEl.classList.add('hidden');
@@ -1341,6 +1616,7 @@ function restoreSession(s) {
   else hideMap();
 
   chatLog.innerHTML = '';
+  chatTurnIndex = 0;
   for (const m of s.chat || []) addChatBubble(m.role === 'user' ? 'user' : 'assistant', m.text);
   openChat();
 

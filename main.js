@@ -156,6 +156,14 @@ const FOLLOWUP_PROMPT =
   'EVERY place line MUST be a full, geocodable address that ends with the city, region and country (e.g. "Bunnings Warehouse, Vermont South, Melbourne, Victoria, Australia") — never output just a store, building or landmark name on its own, and use the city/region/country the user told you (NOT a same-named place elsewhere). ' +
   'Only omit the CANDIDATES block if the user asked something that does not change the location at all.';
 
+// Follow-up "thinking" pass: brief private reasoning plus optional verification
+// search queries, run BEFORE the reply above. This is what gives the refine
+// chat real depth instead of a single reflexive reply, and lets a correction
+// be grounded in a fresh search rather than the model just taking your word.
+const FOLLOWUP_THINK_PROMPT =
+  "Before replying, think through the user's message against everything discussed so far — a few sentences of scratch reasoning about what it implies for the location. Do not write a final answer yet, and do not repeat the report format. " +
+  'Then, if looking something up online would sharpen your confidence (the user named a new place, business, or landmark, or contradicted your earlier guess), output up to 3 lines starting with "VERIFY:" — specific, self-contained search queries (place + city/region/country). If nothing is worth checking, write "VERIFY: none".';
+
 // --- Session state (for follow-up chat + saved logs) -----------------------
 let currentSession = null; // the active conversation, persisted to disk
 
@@ -514,7 +522,7 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
     const geoHits = []; // geocoded candidates collected during search (fallback pin)
     if (webEnabled) {
       send('analyze:pass', { pass: ++pass, total, label: 'Searching the web for clues' });
-      webContext = await runSearchRound(parseSearches(obs2.text), send, geoHits);
+      webContext = await runSearchRound(parseSearches(obs2.text), (info) => send('analyze:search', info), geoHits);
     }
 
     // --- Reasoning: initial deduction (text-only) ------------------------
@@ -568,7 +576,7 @@ ipcMain.handle('analyze:start', async (evt, payload) => {
         const top = geoHits.slice().sort((a, b) => (b.rank || 0) - (a.rank || 0))[0];
         if (top && top.name) verifyQueries.push(top.name);
       }
-      verifyContext = await runSearchRound(verifyQueries.slice(0, 5), send, geoHits);
+      verifyContext = await runSearchRound(verifyQueries.slice(0, 5), (info) => send('analyze:search', info), geoHits);
     }
 
     // --- Reasoning: commit to the most specific location -----------------
@@ -771,8 +779,44 @@ ipcMain.handle('chat:followup', async (evt, payload) => {
   };
 
   const sess = currentSession;
+
+  // --- Pass 1: think it through, and decide whether to verify online -----
+  // Ephemeral — built from a COPY of the history so it never touches
+  // sess.messages, keeping the persisted conversation clean either way.
+  let searchContext = '';
+  const localGeoHits = [];
+  const thinkMessages = sess.messages.concat([
+    { role: 'user', content: `${message}\n\n${FOLLOWUP_THINK_PROMPT}` },
+  ]);
+  send('chat:think', { stage: 'start' });
+  const think = await callWithRetry({
+    url: endpoint,
+    apiKey,
+    model: sess.reasoningModel,
+    messages: thinkMessages,
+    maxTokens: 500,
+    onDelta: (d) => send('chat:thinkDelta', d),
+    onRetry: (info) => send('chat:note', `Rate-limited, waiting ${info.waitSec}s (retry ${info.attempt})…`),
+  });
+  if (think.ok) {
+    const queries = parseVerify(think.text).slice(0, 3);
+    if (queries.length) {
+      searchContext = await runSearchRound(queries, (info) => send('chat:search', info), localGeoHits);
+    }
+  }
+  send('chat:think', { stage: 'done', searched: Boolean(searchContext) });
+
+  // --- Pass 2: commit — the real, persisted turn --------------------------
   sess.chat.push({ role: 'user', text: message });
-  sess.messages.push({ role: 'user', content: `${message}\n\n${FOLLOWUP_PROMPT}` });
+  sess.messages.push({
+    role: 'user',
+    content:
+      message +
+      (searchContext
+        ? `\n\nFresh web-search results for this message (use them to verify or ground your answer; ignore irrelevant hits):\n\n${searchContext}`
+        : '') +
+      `\n\n${FOLLOWUP_PROMPT}`,
+  });
 
   const r = await callWithRetry({
     url: endpoint,
@@ -790,12 +834,16 @@ ipcMain.handle('chat:followup', async (evt, payload) => {
     return { ok: false, error: r.error };
   }
   sess.messages.push({ role: 'assistant', content: r.text });
-  sess.chat.push({ role: 'assistant', text: r.text });
 
   // Update pins only if the model emitted a fresh CANDIDATES block.
   let candidates = null;
   if (/^[ \t]*CANDIDATES:/im.test(r.text) || /map candidates/i.test(r.text)) {
-    const resolved = await resolveCandidates(r.text, { webEnabled: sess.webEnabled, geoHits: [] });
+    // (No onSearch here — the pin double-check stays invisible in the compact
+    // chat UI; the visible "thinking" search above already showed the work.)
+    const resolved = await resolveCandidates(r.text, {
+      webEnabled: sess.webEnabled,
+      geoHits: localGeoHits,
+    });
     if (resolved.length) {
       candidates = resolved;
       sess.candidates = resolved;
@@ -803,8 +851,38 @@ ipcMain.handle('chat:followup', async (evt, payload) => {
       send('chat:located', { candidates });
     }
   }
+
+  // Record enough to REVERT the conversation back to right after this turn:
+  // the message-array length at this point, and the candidates in effect.
+  sess.chat.push({
+    role: 'assistant',
+    text: r.text,
+    messagesLen: sess.messages.length,
+    candidatesSnapshot: candidates || sess.candidates || null,
+  });
+
   saveSession(sess);
   return { ok: true, text: r.text, candidates };
+});
+
+// Revert the active session's conversation to right after a past assistant
+// turn — lets the user back out of a refinement that went the wrong way and
+// try a different follow-up instead. `index` is the position in sess.chat.
+ipcMain.handle('chat:revert', (_evt, payload) => {
+  if (!currentSession) return { ok: false, error: 'No active session.' };
+  const sess = currentSession;
+  const index = payload && Number.isInteger(payload.index) ? payload.index : -1;
+  const turn = index >= 0 && index < sess.chat.length ? sess.chat[index] : null;
+  if (!turn || turn.role !== 'assistant') return { ok: false, error: 'Invalid revert point.' };
+
+  sess.chat = sess.chat.slice(0, index + 1);
+  if (Number.isInteger(turn.messagesLen)) sess.messages = sess.messages.slice(0, turn.messagesLen);
+  sess.candidates = turn.candidatesSnapshot || sess.candidates;
+  if (sess.candidates && sess.candidates[0]) {
+    sess.title = sess.candidates[0].place || sess.candidates[0].label || sess.title;
+  }
+  saveSession(sess);
+  return { ok: true, candidates: sess.candidates || null };
 });
 
 // ---------------------------------------------------------------------------
@@ -1123,15 +1201,16 @@ function parseBestSoFar(text) {
 
 // Run a round of web searches, streaming each query + its results to the UI and
 // collecting geocoded hits. Returns a text block of the results for the model.
-async function runSearchRound(queries, send, geoHits) {
+async function runSearchRound(queries, onSearch, geoHits) {
+  const emit = typeof onSearch === 'function' ? onSearch : () => {};
   if (!queries || !queries.length) {
-    send('analyze:search', { empty: true });
+    emit({ empty: true });
     return '';
   }
   const blocks = [];
   for (const q of queries) {
     // Show the query immediately (spinner), then replace with its results.
-    send('analyze:search', { query: q, pending: true });
+    emit({ query: q, pending: true });
     let r;
     try {
       r = await searchQuery(q);
@@ -1139,7 +1218,7 @@ async function runSearchRound(queries, send, geoHits) {
       r = { query: q, places: [], web: [] };
     }
     for (const pl of r.places) geoHits.push({ ...pl, query: q });
-    send('analyze:search', {
+    emit({
       query: q,
       places: r.places.map((pl) => ({ name: pl.name, lat: pl.lat, lng: pl.lng })),
       web: r.web,
