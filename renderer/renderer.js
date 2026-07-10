@@ -46,6 +46,9 @@ const historyModal = document.getElementById('history-modal');
 const historyList = document.getElementById('history-list');
 const historyClose = document.getElementById('history-close');
 
+const homeRecentList = document.getElementById('home-recent-list');
+const homeSeeAllBtn = document.getElementById('home-see-all');
+
 const settingsBtn = document.getElementById('settings-btn');
 const settingsModal = document.getElementById('settings-modal');
 const apiKeyInput = document.getElementById('api-key');
@@ -1027,6 +1030,7 @@ function resetAll() {
   resultEl.classList.add('hidden');
   resultEl.innerHTML = '';
   resultEmpty.classList.remove('hidden');
+  renderHomeRecent(); // back on the home screen — keep its recent list fresh
   activityEl.classList.add('hidden');
   activityStepsEl.innerHTML = '';
   usageEl.classList.add('hidden');
@@ -1099,12 +1103,25 @@ async function runAnalysis() {
   let curStepStartedAt = 0;
 
   function updateEtaUi() {
-    const elapsed = Date.now() - runStartedAt;
-    const stepFraction = curStepTotal ? (curStepPass - 1) / curStepTotal : 0;
-    const timeFraction = estimatedTotalMs > 0 ? Math.min(0.97, elapsed / estimatedTotalMs) : 0;
-    const pct = Math.round(Math.max(stepFraction, timeFraction) * 100);
+    // The bar's percentage must always agree with "Step X of Y" — so progress
+    // is bounded to THIS step's own slice of the bar ([pass-1, pass] / total)
+    // and creeps toward (but never reaches) the end of that slice using how
+    // long this step alone is expected to take. A slow step just holds near
+    // its slice's ceiling instead of racing ahead into later steps' territory
+    // (which is what let a slow local model show "97%" while still on step 1).
+    const stepStart = curStepTotal ? (curStepPass - 1) / curStepTotal : 0;
+    const stepSlice = curStepTotal ? 1 / curStepTotal : 0;
+    const stepElapsedMs = Date.now() - curStepStartedAt;
+    const stepEstimateMs = estimateStepSeconds(curStepPass, curStepTotal) * 1000;
+    const withinStep = stepEstimateMs > 0 ? Math.min(0.92, stepElapsedMs / stepEstimateMs) : 0;
+    const pct = Math.round((stepStart + stepSlice * withinStep) * 100);
     progressBar.style.width = `${pct}%`;
     progressPercentEl.textContent = `${pct}%`;
+
+    // The "~Ns left" text is a separate, purely informational overall estimate
+    // — it's fine for this to run past its own number on a slow step; it just
+    // switches to a plain "taking longer" message instead of a false countdown.
+    const elapsed = Date.now() - runStartedAt;
     const remainingMs = estimatedTotalMs - elapsed;
     if (remainingMs > 1500) {
       progressEtaEl.textContent = `~${Math.ceil(remainingMs / 1000)}s left`;
@@ -1269,6 +1286,7 @@ async function runAnalysis() {
     if (!raw) {
       resultEl.classList.add('hidden');
       resultEmpty.classList.remove('hidden');
+      renderHomeRecent();
     }
     return;
   }
@@ -1540,6 +1558,38 @@ function closeHistory() {
   historyModal.classList.add('hidden');
 }
 
+// One saved-chat row, shared by the History modal (with delete) and the home
+// screen's "Recent chats" list (without) — so both look and behave the same.
+function buildSessionRow(it, { allowDelete, index } = {}) {
+  const row = document.createElement('div');
+  row.className = 'history-row';
+  if (Number.isFinite(index)) row.style.animationDelay = `${index * 0.05}s`;
+  const when = new Date(it.updatedAt || it.createdAt || Date.now());
+  const turns = it.turns ? ` · ${it.turns} message${it.turns === 1 ? '' : 's'}` : '';
+  row.innerHTML =
+    '<button type="button" class="history-open">' +
+    '<span class="history-title"></span>' +
+    '<span class="history-meta muted"></span></button>' +
+    (allowDelete ? '<button type="button" class="history-del" title="Delete">×</button>' : '');
+  row.querySelector('.history-title').textContent = it.title || 'Untitled location';
+  row.querySelector('.history-meta').textContent = when.toLocaleString() + turns;
+  row.querySelector('.history-open').addEventListener('click', () => loadHistory(it.id));
+  if (allowDelete) {
+    row.querySelector('.history-del').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try {
+        await window.api.deleteSession(it.id);
+      } catch {
+        /* ignore */
+      }
+      if (currentSessionId === it.id) currentSessionId = null;
+      openHistory();
+      renderHomeRecent(); // keep the home screen's list in sync too
+    });
+  }
+  return row;
+}
+
 async function openHistory() {
   historyModal.classList.remove('hidden');
   historyList.innerHTML = '<p class="muted small">Loading…</p>';
@@ -1554,31 +1604,25 @@ async function openHistory() {
     return;
   }
   historyList.innerHTML = '';
-  for (const it of items) {
-    const row = document.createElement('div');
-    row.className = 'history-row';
-    const when = new Date(it.updatedAt || it.createdAt || Date.now());
-    const turns = it.turns ? ` · ${it.turns} message${it.turns === 1 ? '' : 's'}` : '';
-    row.innerHTML =
-      '<button type="button" class="history-open">' +
-      '<span class="history-title"></span>' +
-      '<span class="history-meta muted"></span></button>' +
-      '<button type="button" class="history-del" title="Delete">×</button>';
-    row.querySelector('.history-title').textContent = it.title || 'Untitled location';
-    row.querySelector('.history-meta').textContent = when.toLocaleString() + turns;
-    row.querySelector('.history-open').addEventListener('click', () => loadHistory(it.id));
-    row.querySelector('.history-del').addEventListener('click', async (e) => {
-      e.stopPropagation();
-      try {
-        await window.api.deleteSession(it.id);
-      } catch {
-        /* ignore */
-      }
-      if (currentSessionId === it.id) currentSessionId = null;
-      openHistory();
-    });
-    historyList.appendChild(row);
+  items.forEach((it, i) => historyList.appendChild(buildSessionRow(it, { allowDelete: true, index: i })));
+}
+
+// The home screen's short recent-chats list — the "start new or open an old
+// one" choice you land on when the app opens, or after Clear.
+async function renderHomeRecent() {
+  if (!homeRecentList) return;
+  let items = [];
+  try {
+    items = await window.api.listSessions();
+  } catch {
+    items = [];
   }
+  homeRecentList.innerHTML = '';
+  if (!items.length) {
+    homeRecentList.innerHTML = '<p class="muted small">No saved chats yet — locate a photo to start one.</p>';
+    return;
+  }
+  items.slice(0, 4).forEach((it, i) => homeRecentList.appendChild(buildSessionRow(it, { allowDelete: false, index: i })));
 }
 
 async function loadHistory(id) {
@@ -1629,6 +1673,7 @@ historyClose.addEventListener('click', closeHistory);
 historyModal.addEventListener('click', (e) => {
   if (e.target === historyModal) closeHistory();
 });
+homeSeeAllBtn.addEventListener('click', openHistory);
 
 // --- Tiny Markdown renderer -------------------------------------------------
 // Handles the subset the prompt emits: ## headings, **bold**, `code`,
@@ -1689,4 +1734,5 @@ function renderMarkdown(md) {
     leftStatus.style.color = 'var(--warn)';
     leftStatus.textContent = 'Add a token (or point the endpoint at local Ollama) in Settings to begin.';
   }
+  renderHomeRecent();
 })();
