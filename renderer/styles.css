@@ -479,6 +479,12 @@ button:disabled {
   gap: 10px;
 }
 .home-card {
+  /* Buttons don't stretch to fill a grid cell by default the way a <div>
+     would — without an explicit width every card sized itself to its own
+     text, so cards ended up different widths depending on title length. */
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -508,6 +514,11 @@ button:disabled {
   font-size: 16px;
 }
 .home-card-title {
+  /* flex items default to min-width:auto, which blocks shrinking below the
+     text's natural width — without flex+min-width:0 the ellipsis never had
+     room to kick in and titles just got clipped mid-word instead. */
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 13px;
   font-weight: 700;
   white-space: nowrap;
@@ -1270,7 +1281,7 @@ button:disabled {
   margin-bottom: 12px;
 }
 .activity.done {
-  max-height: 300px;
+  max-height: 440px;
 }
 .activity.collapsed {
   max-height: 46px;
@@ -1353,10 +1364,16 @@ button:disabled {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .step {
+  /* Without this, a flex item with overflow:hidden gets an automatic
+     min-height of 0 per the flexbox spec — so once an expanded step (full of
+     search cards) plus several collapsed ones outgrew the container's
+     max-height, flex-shrink compressed the collapsed headers down to
+     unreadable slivers instead of just letting the list scroll. */
+  flex-shrink: 0;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--panel-2);
@@ -1687,6 +1704,10 @@ button:disabled {
 /* The refine chat's "thinking" pass — same visual language as the activity
    timeline's steps, so the extra reasoning reads as one consistent feature. */
 .chat-think {
+  /* Same fix as .step: overflow:hidden on a flex item in a scrolling column
+     otherwise lets it get crushed by flex-shrink once content overflows the
+     container's max-height, instead of the list just scrolling. */
+  flex-shrink: 0;
   border: 1px dashed var(--border);
   border-radius: 10px;
   background: var(--panel-2);

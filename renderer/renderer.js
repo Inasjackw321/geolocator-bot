@@ -367,12 +367,6 @@ function estimateStepSeconds(pass, total) {
   return arr[pass - 1] || 10;
 }
 
-function estimateTotalSeconds(total) {
-  let sum = 0;
-  for (let p = 1; p <= total; p++) sum += estimateStepSeconds(p, total);
-  return sum;
-}
-
 // Exponential moving average so estimates adapt to this machine/model's real
 // speed over repeated uses without being thrown off by one slow/fast outlier.
 function recordStepSeconds(pass, total, seconds) {
@@ -1158,11 +1152,12 @@ async function runAnalysis() {
   progressEtaEl.textContent = 'Estimating…';
   progressPercentEl.textContent = '0%';
 
-  // Per-run ETA state: blends discrete step progress with elapsed-vs-estimated
-  // time so the bar creeps forward smoothly, not just in big jumps per step.
+  // Per-run ETA state: the bar and the "~Ns left" text are both recomputed on
+  // every tick from where we ACTUALLY are (current step + time spent in it),
+  // not from a number frozen at the start — so a step that runs faster or
+  // slower than predicted visibly changes the estimate instead of the text
+  // just counting down a fixed number like a kitchen timer.
   let etaTimer = null;
-  let runStartedAt = 0;
-  let estimatedTotalMs = 0;
   let curStepPass = 0;
   let curStepTotal = 0;
   let curStepStartedAt = 0;
@@ -1183,24 +1178,26 @@ async function runAnalysis() {
     progressBar.style.width = `${pct}%`;
     progressPercentEl.textContent = `${pct}%`;
 
-    // The "~Ns left" text is a separate, purely informational overall estimate
-    // — it's fine for this to run past its own number on a slow step; it just
-    // switches to a plain "taking longer" message instead of a false countdown.
-    const elapsed = Date.now() - runStartedAt;
-    const remainingMs = estimatedTotalMs - elapsed;
-    if (remainingMs > 1500) {
-      progressEtaEl.textContent = `~${Math.ceil(remainingMs / 1000)}s left`;
-    } else if (elapsed < estimatedTotalMs + 15000) {
-      progressEtaEl.textContent = 'almost there…';
+    if (stepElapsedMs <= stepEstimateMs) {
+      // On track: remaining = what's left of THIS step + every step still
+      // ahead, using the latest learned estimates — recomputed fresh each
+      // tick and each time a new step starts, not carried from run start.
+      let remainingMs = stepEstimateMs - stepElapsedMs;
+      for (let p = curStepPass + 1; p <= curStepTotal; p++) {
+        remainingMs += estimateStepSeconds(p, curStepTotal) * 1000;
+      }
+      progressEtaEl.textContent = remainingMs > 900 ? `~${Math.ceil(remainingMs / 1000)}s left` : 'almost there…';
     } else {
-      progressEtaEl.textContent = 'taking longer than usual…';
+      // This step is running past its own estimate. Rather than freeze on a
+      // static "taking longer" message, keep a live, counting-up number so
+      // it's visibly still ticking, not stuck.
+      const overrunS = Math.round((stepElapsedMs - stepEstimateMs) / 1000);
+      progressEtaEl.textContent = `taking longer than usual (+${overrunS}s)…`;
     }
   }
 
-  function startEtaTimer(total) {
+  function startEtaTimer() {
     if (etaTimer) clearInterval(etaTimer);
-    runStartedAt = Date.now();
-    estimatedTotalMs = estimateTotalSeconds(total) * 1000;
     progressMetaEl.classList.remove('hidden');
     etaTimer = setInterval(updateEtaUi, 250);
     updateEtaUi();
@@ -1250,11 +1247,11 @@ async function runAnalysis() {
     curFinal = Boolean(info.final);
     if (info.total) {
       progressEl.classList.remove('indeterminate');
-      if (info.pass === 1) startEtaTimer(info.total);
       curStepPass = info.pass;
       curStepTotal = info.total;
       curStepStartedAt = Date.now();
-      updateEtaUi();
+      if (info.pass === 1) startEtaTimer();
+      else updateEtaUi();
     }
     activityStatusEl.textContent = `Step ${info.pass} of ${info.total}`;
     activityStatusEl.className = 'activity-status';
