@@ -12,11 +12,11 @@
   </head>
   <body>
     <header class="topbar">
-      <div class="brand">
+      <div id="brand-btn" class="brand" role="button" tabindex="0" title="Back to home">
         <span class="globe">🌐</span>
         <div>
           <h1>Geolink</h1>
-          <p class="tagline">Drop in a photo — AI links the clues to where it was taken</p>
+          <p class="tagline">AI-powered photo geolocation</p>
         </div>
       </div>
       <div class="topbar-actions">
@@ -26,109 +26,160 @@
       </div>
     </header>
 
-    <main class="layout">
-      <section class="panel left">
-        <div id="dropzone" class="dropzone">
-          <div id="thumbs" class="thumbs hidden"></div>
-          <div id="dropzone-empty" class="dropzone-empty">
-            <div class="dz-icon">🖼️</div>
+    <main id="app-main" class="app-main">
+      <!-- Home — the landing view: start a new location or resume a saved one -->
+      <section id="view-home" class="view view-home">
+        <div class="home-wrap">
+          <div class="home-hero">
+            <span class="home-hero-icon">🌐</span>
+            <h1>Where was this taken?</h1>
+            <p class="muted">
+              Drop a photo and Geolink's AI reads the clues — signage,
+              architecture, plants, road markings, even the sun's shadow — to
+              find the place, then verifies its guess with a live web search.
+            </p>
+          </div>
+
+          <div id="home-dropzone" class="home-dropzone">
+            <div class="home-dz-icon">🖼️</div>
             <p><strong>Drop photos here</strong></p>
-            <p class="muted">one or more of the same place · click to choose · paste to add</p>
+            <p class="muted small">or click to browse · paste to add · up to 8 photos of the same place</p>
+          </div>
+
+          <div class="home-features">
+            <div class="home-feature">
+              <span class="hf-icon">🔎</span>
+              <div>
+                <strong>Multi-pass reasoning</strong>
+                <p class="muted small">
+                  Vision + reasoning models narrow it down, then verify the top
+                  candidates with a real web search.
+                </p>
+              </div>
+            </div>
+            <div class="home-feature">
+              <span class="hf-icon">🗺️</span>
+              <div>
+                <strong>Ranked pins, not guesses</strong>
+                <p class="muted small">
+                  Best guess plus alternatives, geocoded precisely — not just a
+                  city centroid.
+                </p>
+              </div>
+            </div>
+            <div class="home-feature">
+              <span class="hf-icon">💬</span>
+              <div>
+                <strong>Refine by chatting</strong>
+                <p class="muted small">
+                  Correct or narrow the guess afterward — it thinks it through
+                  and re-checks online.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div class="home-recent-wrap">
+            <div class="home-recent-head">
+              <span>Recent chats</span>
+              <button id="home-see-all" class="link-btn" type="button">See all →</button>
+            </div>
+            <div id="home-recent-list" class="home-recent-grid"></div>
           </div>
         </div>
-
-        <label class="field-label" for="note">Optional context or question</label>
-        <textarea
-          id="note"
-          class="note"
-          rows="2"
-          placeholder="e.g. 'Taken on a road trip last summer' or 'Which city is this?'"
-        ></textarea>
-
-        <div class="actions">
-          <button id="analyze-btn" class="primary-btn" disabled>
-            <span class="btn-spinner" aria-hidden="true"></span>
-            <span class="btn-label">Locate</span>
-          </button>
-          <button id="clear-btn" class="ghost-btn" disabled>Clear</button>
-        </div>
-        <div id="progress" class="progress hidden"><div id="progress-bar" class="progress-bar"></div></div>
-        <div id="progress-meta" class="progress-meta hidden">
-          <span id="progress-eta" class="progress-eta">Estimating…</span>
-          <span id="progress-percent" class="progress-percent">0%</span>
-        </div>
-        <p id="left-status" class="left-status muted"></p>
       </section>
 
-      <section class="panel right">
-        <div id="result-empty" class="result-empty">
-          <div class="home">
-            <div class="home-hero">
-              <span class="home-emoji">🌐</span>
-              <h2>Ready when you are</h2>
-              <p class="muted">
-                Drop a photo on the left to start a new location, or pick up a
-                saved chat below.
-              </p>
-            </div>
-            <div class="home-recent">
-              <div class="home-recent-head">
-                <span>Recent chats</span>
-                <button id="home-see-all" class="link-btn" type="button">See all →</button>
+      <!-- Workspace — shown once photos are queued or a saved chat is opened -->
+      <section id="view-workspace" class="view view-workspace hidden">
+        <div class="layout">
+          <section class="panel left">
+            <div id="dropzone" class="dropzone">
+              <div id="thumbs" class="thumbs hidden"></div>
+              <div id="dropzone-empty" class="dropzone-empty">
+                <div class="dz-icon">🖼️</div>
+                <p><strong>Drop photos here</strong></p>
+                <p class="muted">one or more of the same place · click to choose · paste to add</p>
               </div>
-              <div id="home-recent-list" class="home-recent-list"></div>
             </div>
-          </div>
-        </div>
 
-        <section id="activity" class="activity hidden">
-          <button id="activity-head" class="activity-head" type="button">
-            <span class="activity-title">Analysing</span>
-            <span id="activity-status" class="activity-status"></span>
-            <span class="activity-chevron">⌄</span>
-          </button>
-          <ol id="activity-steps" class="activity-steps"></ol>
-        </section>
-
-        <article id="result" class="result hidden"></article>
-
-        <div id="map-backdrop" class="map-backdrop hidden"></div>
-        <div id="map-wrap" class="map-wrap hidden">
-          <div class="map-head">
-            <span id="map-label" class="map-label"></span>
-            <div class="map-head-actions">
-              <a id="map-link" class="map-link" href="#" target="_blank" rel="noopener">
-                Open in Google Maps ↗
-              </a>
-              <button id="map-recenter" class="map-icon-btn" type="button" title="Fit all pins">⌖</button>
-              <button id="map-expand" class="map-icon-btn" type="button" title="Expand map">⤢</button>
-            </div>
-          </div>
-          <div id="map"></div>
-          <div id="candidates" class="candidates hidden"></div>
-        </div>
-
-        <section id="chat" class="chat hidden">
-          <div class="chat-head">
-            <span class="chat-title">💬 Refine the location</span>
-            <span class="chat-hint muted">Ask a follow-up or add a clue to narrow it down</span>
-          </div>
-          <div id="chat-log" class="chat-log"></div>
-          <div class="chat-input-row">
+            <label class="field-label" for="note">Optional context or question</label>
             <textarea
-              id="chat-input"
-              class="chat-input"
-              rows="1"
-              placeholder="e.g. 'It's near a river' or 'Can you narrow it to a street?'"
+              id="note"
+              class="note"
+              rows="2"
+              placeholder="e.g. 'Taken on a road trip last summer' or 'Which city is this?'"
             ></textarea>
-            <button id="chat-send" class="primary-btn" type="button">
-              <span class="btn-spinner" aria-hidden="true"></span>
-              <span class="btn-label">Send</span>
-            </button>
-          </div>
-        </section>
 
-        <footer id="usage" class="usage muted hidden"></footer>
+            <div class="actions">
+              <button id="analyze-btn" class="primary-btn" disabled>
+                <span class="btn-spinner" aria-hidden="true"></span>
+                <span class="btn-label">Locate</span>
+              </button>
+              <button id="clear-btn" class="ghost-btn" disabled>Clear</button>
+            </div>
+            <div id="progress" class="progress hidden"><div id="progress-bar" class="progress-bar"></div></div>
+            <div id="progress-meta" class="progress-meta hidden">
+              <span id="progress-eta" class="progress-eta">Estimating…</span>
+              <span id="progress-percent" class="progress-percent">0%</span>
+            </div>
+            <p id="left-status" class="left-status muted"></p>
+          </section>
+
+          <section class="panel right">
+            <div id="result-empty" class="result-empty">
+              <p class="muted">Click <strong>Locate</strong> to start the analysis.</p>
+            </div>
+
+            <section id="activity" class="activity hidden">
+              <button id="activity-head" class="activity-head" type="button">
+                <span class="activity-title">Analysing</span>
+                <span id="activity-status" class="activity-status"></span>
+                <span class="activity-chevron">⌄</span>
+              </button>
+              <ol id="activity-steps" class="activity-steps"></ol>
+            </section>
+
+            <article id="result" class="result hidden"></article>
+
+            <div id="map-backdrop" class="map-backdrop hidden"></div>
+            <div id="map-wrap" class="map-wrap hidden">
+              <div class="map-head">
+                <span id="map-label" class="map-label"></span>
+                <div class="map-head-actions">
+                  <a id="map-link" class="map-link" href="#" target="_blank" rel="noopener">
+                    Open in Google Maps ↗
+                  </a>
+                  <button id="map-recenter" class="map-icon-btn" type="button" title="Fit all pins">⌖</button>
+                  <button id="map-expand" class="map-icon-btn" type="button" title="Expand map">⤢</button>
+                </div>
+              </div>
+              <div id="map"></div>
+              <div id="candidates" class="candidates hidden"></div>
+            </div>
+
+            <section id="chat" class="chat hidden">
+              <div class="chat-head">
+                <span class="chat-title">💬 Refine the location</span>
+                <span class="chat-hint muted">Ask a follow-up or add a clue to narrow it down</span>
+              </div>
+              <div id="chat-log" class="chat-log"></div>
+              <div class="chat-input-row">
+                <textarea
+                  id="chat-input"
+                  class="chat-input"
+                  rows="1"
+                  placeholder="e.g. 'It's near a river' or 'Can you narrow it to a street?'"
+                ></textarea>
+                <button id="chat-send" class="primary-btn" type="button">
+                  <span class="btn-spinner" aria-hidden="true"></span>
+                  <span class="btn-label">Send</span>
+                </button>
+              </div>
+            </section>
+
+            <footer id="usage" class="usage muted hidden"></footer>
+          </section>
+        </div>
       </section>
     </main>
 

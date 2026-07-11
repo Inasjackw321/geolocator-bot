@@ -1,6 +1,11 @@
 'use strict';
 
 // --- DOM refs ---------------------------------------------------------------
+const brandBtn = document.getElementById('brand-btn');
+const viewHome = document.getElementById('view-home');
+const viewWorkspace = document.getElementById('view-workspace');
+const homeDropzone = document.getElementById('home-dropzone');
+
 const dropzone = document.getElementById('dropzone');
 const dropzoneEmpty = document.getElementById('dropzone-empty');
 const thumbs = document.getElementById('thumbs');
@@ -76,6 +81,35 @@ let busy = false;
 let chatBusy = false;
 let currentSessionId = null; // set when an analysis completes or a chat is opened
 let chatTurnIndex = 0; // mirrors sess.chat's length on the main side, for revert
+
+// --- Views: Home (landing) vs. Workspace (analysis) -------------------------
+// The app has exactly two top-level screens. Home is where you land on launch,
+// after Clear, or via the brand — it's the "start new or resume an old chat"
+// choice. Workspace only ever appears once photos are queued or a saved chat
+// is opened, so it never needs its own empty/landing state.
+function showHome() {
+  viewWorkspace.classList.add('hidden');
+  viewHome.classList.remove('hidden');
+  renderHomeRecent();
+}
+
+function showWorkspace() {
+  viewHome.classList.add('hidden');
+  viewWorkspace.classList.remove('hidden');
+}
+
+function goHome() {
+  if (busy) return; // an analysis is streaming into the workspace — don't yank it away
+  resetAll();
+}
+
+brandBtn.addEventListener('click', goHome);
+brandBtn.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    goHome();
+  }
+});
 
 // --- Map (Leaflet, bundled locally) -----------------------------------------
 let map = null;
@@ -838,6 +872,33 @@ dropzone.addEventListener('drop', (e) => {
   addFiles(e.dataTransfer.files);
 });
 
+// The home screen's dropzone is the entry point into the workspace: picking or
+// dropping a photo there queues it (via the same addFiles/addImages the
+// workspace dropzone uses) and immediately switches views.
+homeDropzone.addEventListener('click', async () => {
+  const picked = await window.api.pickImage();
+  if (Array.isArray(picked) && picked.length) {
+    addImages(picked);
+    showWorkspace();
+  }
+});
+['dragenter', 'dragover'].forEach((evt) =>
+  homeDropzone.addEventListener(evt, (e) => {
+    e.preventDefault();
+    homeDropzone.classList.add('dragover');
+  })
+);
+['dragleave', 'drop'].forEach((evt) =>
+  homeDropzone.addEventListener(evt, (e) => {
+    e.preventDefault();
+    homeDropzone.classList.remove('dragover');
+  })
+);
+homeDropzone.addEventListener('drop', async (e) => {
+  await addFiles(e.dataTransfer.files);
+  if (images.length) showWorkspace();
+});
+
 // --- Highlight editor -------------------------------------------------------
 let editIndex = -1;
 let drawing = null;
@@ -1003,7 +1064,7 @@ async function buildHighlightCrops() {
 }
 
 // Paste from clipboard (one or more images)
-window.addEventListener('paste', (e) => {
+window.addEventListener('paste', async (e) => {
   if (busy) return;
   const items = e.clipboardData && e.clipboardData.items;
   if (!items) return;
@@ -1014,7 +1075,11 @@ window.addEventListener('paste', (e) => {
       if (file) files.push(file);
     }
   }
-  if (files.length) addFiles(files);
+  if (!files.length) return;
+  await addFiles(files);
+  // Pasting while on the home screen should drop you straight into the
+  // workspace, same as dropping/picking a photo there does.
+  if (images.length && !viewHome.classList.contains('hidden')) showWorkspace();
 });
 
 clearBtn.addEventListener('click', () => {
@@ -1030,7 +1095,6 @@ function resetAll() {
   resultEl.classList.add('hidden');
   resultEl.innerHTML = '';
   resultEmpty.classList.remove('hidden');
-  renderHomeRecent(); // back on the home screen — keep its recent list fresh
   activityEl.classList.add('hidden');
   activityStepsEl.innerHTML = '';
   usageEl.classList.add('hidden');
@@ -1051,6 +1115,7 @@ function resetAll() {
   } catch {
     /* main may be mid-call; harmless */
   }
+  showHome();
 }
 
 // --- Analyze ----------------------------------------------------------------
@@ -1558,9 +1623,8 @@ function closeHistory() {
   historyModal.classList.add('hidden');
 }
 
-// One saved-chat row, shared by the History modal (with delete) and the home
-// screen's "Recent chats" list (without) — so both look and behave the same.
-function buildSessionRow(it, { allowDelete, index } = {}) {
+// One saved-chat row for the History modal's full list (with delete).
+function buildSessionRow(it, { index } = {}) {
   const row = document.createElement('div');
   row.className = 'history-row';
   if (Number.isFinite(index)) row.style.animationDelay = `${index * 0.05}s`;
@@ -1570,23 +1634,21 @@ function buildSessionRow(it, { allowDelete, index } = {}) {
     '<button type="button" class="history-open">' +
     '<span class="history-title"></span>' +
     '<span class="history-meta muted"></span></button>' +
-    (allowDelete ? '<button type="button" class="history-del" title="Delete">×</button>' : '');
+    '<button type="button" class="history-del" title="Delete">×</button>';
   row.querySelector('.history-title').textContent = it.title || 'Untitled location';
   row.querySelector('.history-meta').textContent = when.toLocaleString() + turns;
   row.querySelector('.history-open').addEventListener('click', () => loadHistory(it.id));
-  if (allowDelete) {
-    row.querySelector('.history-del').addEventListener('click', async (e) => {
-      e.stopPropagation();
-      try {
-        await window.api.deleteSession(it.id);
-      } catch {
-        /* ignore */
-      }
-      if (currentSessionId === it.id) currentSessionId = null;
-      openHistory();
-      renderHomeRecent(); // keep the home screen's list in sync too
-    });
-  }
+  row.querySelector('.history-del').addEventListener('click', async (e) => {
+    e.stopPropagation();
+    try {
+      await window.api.deleteSession(it.id);
+    } catch {
+      /* ignore */
+    }
+    if (currentSessionId === it.id) currentSessionId = null;
+    openHistory();
+    renderHomeRecent(); // keep the home screen's list in sync too
+  });
   return row;
 }
 
@@ -1604,7 +1666,26 @@ async function openHistory() {
     return;
   }
   historyList.innerHTML = '';
-  items.forEach((it, i) => historyList.appendChild(buildSessionRow(it, { allowDelete: true, index: i })));
+  items.forEach((it, i) => historyList.appendChild(buildSessionRow(it, { index: i })));
+}
+
+// A recent-chat CARD for the home screen's grid — a lighter-weight cousin of
+// buildSessionRow's list-item, sized and styled for a landing-page feel.
+function buildHomeCard(it, index) {
+  const card = document.createElement('button');
+  card.type = 'button';
+  card.className = 'home-card';
+  if (Number.isFinite(index)) card.style.animationDelay = `${index * 0.06}s`;
+  const when = new Date(it.updatedAt || it.createdAt || Date.now());
+  const turns = it.turns ? `${it.turns} message${it.turns === 1 ? '' : 's'} · ` : '';
+  card.innerHTML =
+    '<span class="home-card-top"><span class="home-card-icon">📍</span>' +
+    '<span class="home-card-title"></span></span>' +
+    '<span class="home-card-meta"></span>';
+  card.querySelector('.home-card-title').textContent = it.title || 'Untitled location';
+  card.querySelector('.home-card-meta').textContent = `${turns}${when.toLocaleDateString()}`;
+  card.addEventListener('click', () => loadHistory(it.id));
+  return card;
 }
 
 // The home screen's short recent-chats list — the "start new or open an old
@@ -1619,10 +1700,10 @@ async function renderHomeRecent() {
   }
   homeRecentList.innerHTML = '';
   if (!items.length) {
-    homeRecentList.innerHTML = '<p class="muted small">No saved chats yet — locate a photo to start one.</p>';
+    homeRecentList.innerHTML = '<p class="muted small">No saved chats yet — locate a photo above to start one.</p>';
     return;
   }
-  items.slice(0, 4).forEach((it, i) => homeRecentList.appendChild(buildSessionRow(it, { allowDelete: false, index: i })));
+  items.slice(0, 4).forEach((it, i) => homeRecentList.appendChild(buildHomeCard(it, i)));
 }
 
 async function loadHistory(id) {
@@ -1642,6 +1723,7 @@ function restoreSession(s) {
   busy = false;
   chatBusy = false;
   currentSessionId = s.id;
+  showWorkspace();
 
   images = Array.isArray(s.images) ? s.images.map((im) => ({ ...im, highlights: [] })) : [];
   renderThumbs();

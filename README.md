@@ -31,6 +31,12 @@ opens straight away. First launch, click **⚙ Settings**, paste your
 
 ## Features
 
+- **A proper home screen** — the app opens on a real landing view: a hero, a big
+  drop zone, a feature strip, and a **Recent chats** grid of your saved sessions
+  (click one to resume, or **See all** for the full history). Click the **Geolink**
+  logo any time to come back here. Dropping/pasting/choosing a photo — on the home
+  screen or in the workspace — takes you straight into the **workspace** view where
+  the analysis, map, and refine chat live.
 - **Multiple photos of the same place** — drag/drop, paste, or browse up to 8
   images; the more angles and details you give it, the better it can narrow down.
   Thumbnails show what's queued; click any **×** to remove one.
